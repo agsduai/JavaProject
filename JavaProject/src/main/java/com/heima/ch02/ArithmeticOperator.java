@@ -41,6 +41,8 @@ public class ArithmeticOperator {
         int b =6;
         System.out.println(a);
         System.out.println(b);
+        //3.333333334
+        System.out.println(10 / 3);
     }
 }
 
