@@ -20,21 +20,27 @@ package com.heima.ch02;
 // ==================== 示例代码 ====================
 
 public class ArithmeticOperator {
+//    public static void main(String[] args) {
+//        int a = 17;
+//        int b = 5;
+//        // 五种算术运算
+//        System.out.println("和：" + (a + b));    // 22
+//        System.out.println("差：" + (a - b));    // 12
+//        System.out.println("积：" + (a * b));    // 85
+//        System.out.println("商：" + (a / b));    // 3：整数相除取整
+//        System.out.println("余：" + (a % b));    // 2：取模
+//        // 整数相除 vs 小数参与运算
+//        System.out.println(10 / 3);      // 3
+//        System.out.println(10.0 / 3);    // 3.3333...：有小数参与才是小数
+//        System.out.println(10 % 3);      // 1
+//        // 小数精度误差（了解）
+//        System.out.println(1.1 + 0.1);   // 1.2000000000000002
+//    }
     public static void main(String[] args) {
-        int a = 17;
-        int b = 5;
-        // 五种算术运算
-        System.out.println("和：" + (a + b));    // 22
-        System.out.println("差：" + (a - b));    // 12
-        System.out.println("积：" + (a * b));    // 85
-        System.out.println("商：" + (a / b));    // 3：整数相除取整
-        System.out.println("余：" + (a % b));    // 2：取模
-        // 整数相除 vs 小数参与运算
-        System.out.println(10 / 3);      // 3
-        System.out.println(10.0 / 3);    // 3.3333...：有小数参与才是小数
-        System.out.println(10 % 3);      // 1
-        // 小数精度误差（了解）
-        System.out.println(1.1 + 0.1);   // 1.2000000000000002
+        int a =23;
+        int b =6;
+        System.out.println(a);
+        System.out.println(b);
     }
 }
 
