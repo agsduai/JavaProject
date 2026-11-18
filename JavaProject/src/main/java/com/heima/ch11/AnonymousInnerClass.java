@@ -1,0 +1,77 @@
+/**
+ * ============================================================
+ * 课程来源：黑马程序员《2026版 AI+Java 零基础全套视频课程》
+ *            B站 BV1TJxCzSEEZ（阿玮老师）
+ * 课号：11-21
+ * 课名：匿名内部类
+ * ------------------------------------------------------------
+ * 知识点：
+ *   - 匿名内部类格式：`new 父类名/接口名() { 方法重写 }`，整体是一个表达式，最后必须以分号结束
+ *   - 本质：一个匿名的子类/实现类对象 —— new 的瞬间类被定义、对象被创建；“类没有名字，对象有引用”
+ *   - 使用时机：某个类只需要使用一次时用匿名内部类最省事；如果需要反复使用，应该老老实实定义独立的实现类
+ *   - 接口作为方法参数时，可以在调用处直接传匿名内部类对象，这是开发中最常见的用法（如回调、监听器场景）
+ *   - 匿名内部类可以直接访问所在方法中的局部变量（JDK8 起该变量默认是事实最终变量，不能被修改）
+ *   - 使用建议：匿名内部类内部代码不宜过长；逻辑复杂时应抽取成独立类，保证可读性
+ * ============================================================
+ */
+
+package com.heima.ch11;
+
+// ==================== 示例代码 ====================
+
+// 抽象父类：用于演示“继承式”匿名内部类
+abstract class AnonymousInnerClassAnimal {
+    public abstract void eat();
+}
+
+// 接口：用于演示“接口式”匿名内部类
+interface AnonymousInnerClassSwimmable {
+    void swim();
+}
+
+public class AnonymousInnerClass {
+    public static void main(String[] args) {
+        // 一、继承父类：new 父类名() { 重写方法 }
+        AnonymousInnerClassAnimal a = new AnonymousInnerClassAnimal() {
+            @Override
+            public void eat() {
+                System.out.println("猫吃鱼");
+            }
+        };
+        a.eat();
+
+        // 二、实现接口：new 接口名() { 重写方法 }
+        AnonymousInnerClassSwimmable s = new AnonymousInnerClassSwimmable() {
+            @Override
+            public void swim() {
+                System.out.println("自由泳，速度 2 米/秒");
+            }
+        };
+        s.swim();
+
+        // 三、接口作为方法参数：调用处直接传匿名内部类对象
+        start(new AnonymousInnerClassSwimmable() {
+            @Override
+            public void swim() {
+                System.out.println("蛙泳，速度 1.5 米/秒");
+            }
+        });
+    }
+
+    // 方法形参是接口类型：调用时必须传入“接口实现类对象”
+    // 匿名内部类就是最省事的实现类对象
+    public static void start(AnonymousInnerClassSwimmable s) {
+        System.out.println("游泳比赛开始：");
+        s.swim();
+    }
+}
+
+/*
+ * ============================================================
+ * 课后练习题（无参考答案）
+ * ------------------------------------------------------------
+ * 1. 用匿名内部类的两种方式分别“继承抽象类 Bird（抽象方法 fly()）”和“实现接口 Flyable（方法 fly()）”，各创建对象并调用重写后的方法。
+ * 2. 编写方法 `public static void calc(Compute c, int a, int b)`（接口 Compute 含方法 getResult(int a, int b)），在调用处用匿名内部类分别传入“求和”和“求乘积”两种实现并打印结果。
+ * 3. 对比“每次调用都重新 new 一个匿名内部类对象”和“先用引用变量把匿名对象保存起来再多次调用”两种写法，用文字说明各自适合的场景。
+ * ============================================================
+ */

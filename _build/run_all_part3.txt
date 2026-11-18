@@ -1,0 +1,30 @@
+classes to run: 259 (prefixes=['com/heima/ch44', 'com/heima/ch45', 'com/heima/ch46', 'com/heima/ch47', 'com/heima/ch48', 'com/heima/ch49', 'com/heima/ch50', 'com/heima/ch51', 'com/heima/ch52', 'com/heima/ch53', 'com/heima/ch54', 'com/heima/ch55', 'com/heima/ch56', 'com/heima/practice'])
+... progress 1/259 (ok=1)
+... progress 51/259 (ok=51)
+... progress 101/259 (ok=101)
+... progress 151/259 (ok=151)
+FAIL(1) com.heima.practice.basic.MenuGuessNumber
+FAIL(1) com.heima.practice.basic.ScoreGradeCounter
+... progress 201/259 (ok=199)
+... progress 251/259 (ok=249)
+
+RUN_ALL pass=257 fail=2 timeout=0 total=259
+FAILS:
+============================================================
+com.heima.practice.basic.MenuGuessNumber
+Exception in thread "main" java.util.InputMismatchException
+	at java.base/java.util.Scanner.throwFor(Scanner.java:947)
+	at java.base/java.util.Scanner.next(Scanner.java:1602)
+	at java.base/java.util.Scanner.nextInt(Scanner.java:2267)
+	at java.base/java.util.Scanner.nextInt(Scanner.java:2221)
+	at com.heima.practice.basic.MenuGuessNumber.main(MenuGuessNumber.java:28)
+
+============================================================
+com.heima.practice.basic.ScoreGradeCounter
+Exception in thread "main" java.util.InputMismatchException
+	at java.base/java.util.Scanner.throwFor(Scanner.java:947)
+	at java.base/java.util.Scanner.next(Scanner.java:1602)
+	at java.base/java.util.Scanner.nextInt(Scanner.java:2267)
+	at java.base/java.util.Scanner.nextInt(Scanner.java:2221)
+	at com.heima.practice.basic.ScoreGradeCounter.main(ScoreGradeCounter.java:30)
+

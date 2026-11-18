@@ -1,0 +1,16 @@
+src\main\java\com\heima\ch03\IfDetails.java:30: 警告: [empty] if 之后没有语句
+        if (money > 100); {
+                        ^
+src\main\java\com\heima\ch10\StaticMemory.java:39: 警告: [static] static 变量应由类型名称StaticMemoryStaticPerson而不是表达式限定
+        p1.country = "华夏";
+          ^
+src\main\java\com\heima\ch10\StaticMemory.java:40: 警告: [static] static 变量应由类型名称StaticMemoryStaticPerson而不是表达式限定
+        System.out.println(p2.country);           // 华夏（改的是共享的那一份）
+                             ^
+src\main\java\com\heima\ch10\StaticVariable.java:50: 警告: [static] static 变量应由类型名称StaticVariableStaticStudent而不是表达式限定
+        System.out.println("s1看到的count：" + s1.count);
+                                             ^
+src\main\java\com\heima\ch14\SystemObjectClass.java:23: 警告: [overrides] 类SystemObjectClassStudent覆盖了 equals, 但该类或任何超类都未覆盖 hashCode 方法
+class SystemObjectClassStudent {
+^
+5 个警告

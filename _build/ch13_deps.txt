@@ -1,0 +1,86 @@
+class Role {
+    private String name;
+    private int hp;
+    private int attack;
+
+    public Role() {
+    }
+
+    public Role(String name, int hp, int attack) {
+        this.name = name;
+        this.hp = hp;
+        this.attack = attack;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public int getHp() {
+        return hp;
+    }
+
+    public void setHp(int hp) {
+        this.hp = hp;
+    }
+
+    public int getAttack() {
+        return attack;
+    }
+
+    public void setAttack(int attack) {
+        this.attack = attack;
+    }
+
+    // 公共行为：受击扣血，血量最低降到 0
+    public void hurt(int damage) {
+        this.hp -= damage;
+        if (this.hp < 0) {
+            this.hp = 0;
+        }
+    }
+}
+
+class Hero extends Role {
+    private int anger;
+
+    public Hero() {
+    }
+
+    public Hero(String name, int hp, int attack, int anger) {
+        super(name, hp, attack);
+        this.anger = anger;
+    }
+
+    public int getAnger() {
+        return anger;
+    }
+
+    public void setAnger(int anger) {
+        this.anger = anger;
+    }
+}
+
+class Enemy extends Role {
+    private int type;
+
+    public Enemy() {
+    }
+
+    public Enemy(int type, String name, int hp, int attack) {
+        super(name, hp, attack);
+        this.type = type;
+    }
+
+    public int getType() {
+        return type;
+    }
+
+    public void setType(int type) {
+        this.type = type;
+    }
+}

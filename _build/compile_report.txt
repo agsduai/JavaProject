@@ -1,0 +1,7 @@
+total=695 pass=695 fail=0
+errors=0 warnings=6(pre-existing)
+full_smoke=695/695 (ch02-21:200, ch22-43:236, ch44-56+practice:259)
+interactive_reverify=18/18 (针对性输入)
+structure_audit=0 defects (33 format-variance notes: ch08-13 multi-block, generator-supported)
+output_pollution=1 found+fixed (ch42 SloGoldenSignals %)
+name_mapping=complete (no NO NAME/SKIP)
