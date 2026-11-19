@@ -549,3 +549,23 @@ public class ExecutableJar {
 1. 给一个含第三方依赖的项目配置 `maven-shade-plugin`，打出 `java -jar` 能直接运行的包，并用 `jar tf` 检查内容。
 2. 说明 `maven-jar-plugin` 和 `maven-shade-plugin` 打的包有什么区别，各自适用什么场景。
 3. 一个 `java -jar` 报 `NoClassDefFoundError: com/mysql/cj/jdbc/Driver` 的包，问题最可能出在哪一步？给出排查顺序。
+
+## 本章综合练习
+
+### 综合题：多模块工程与可执行 jar
+
+**场景**
+
+把单模块工程改造成多模块 Maven 工程：common 放工具、dao 依赖 common、web 依赖 dao，最后打一个能 java -jar 直接跑的可执行包，并解决一次依赖冲突。
+
+**任务**
+1. 搭建 parent + 三个子模块的聚合结构，父 pom 用 dependencyManagement 统一版本，子模块只声明依赖不写版本号。
+2. 在 dao 模块引入两个间接依赖不同版本的同一个库，制造依赖冲突，用 mvn dependency:tree 定位并用 exclusions 或 dependencyManagement 解决。
+3. 配置 maven-shade-plugin 或 assembly 打可执行 jar，写清 Main-Class，验证 java -jar 能启动并读到 resources 下的配置。
+4. 说明 compile、provided、runtime、test 四种依赖范围的区别，并各举一个真实使用场景。
+
+**验收清单**
+- [ ] mvn clean package 一次成功，三个模块产物齐全。
+- [ ] dependency:tree 输出中冲突库只剩一个版本，运行时不出现 NoSuchMethodError。
+- [ ] 可执行 jar 在干净目录下 java -jar 能跑起来，不依赖外部 classpath。
+- [ ] 父 pom 中没有重复声明版本，子模块 pom 里看不到具体版本号。

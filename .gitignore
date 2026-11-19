@@ -46,5 +46,8 @@ _build/run_all_part*.txt
 .DS_Store
 Thumbs.db
 
+# ---------- Python 脚本缓存 ----------
+__pycache__/
+
 # ---------- 日志 ----------
 *.log

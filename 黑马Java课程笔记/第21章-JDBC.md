@@ -869,3 +869,23 @@ class JdbcDaoCaseDao {
 1. 按 DAO 模式实现一个完整的图书管理模块：新增图书、按 ID 删除、修改价格、按书名模糊查询、分页查询。
 2. 在 DAO 之上加一层 `Service`，实现"借书"业务：先查库存，库存大于 0 才扣减并生成借阅记录，整个过程使用事务。
 3. 把 `JdbcDaoCaseDao` 里的连接获取换成第 21-07 课的 `JdbcUtil`，并说明这样改带来哪些好处。
+
+## 本章综合练习
+
+### 综合题：学生管理持久层（JDBC + DAO）
+
+**场景**
+
+用纯 JDBC 写一个学生管理持久层：封装工具类拿连接、用 PreparedStatement 防注入、用 ResultSet 映射实体、用事务保证批量导入要么全成功要么全失败，最后按 DAO 模式收口。
+
+**任务**
+1. 写 JdbcUtil：静态代码块加载驱动，提供 getConnection / close 方法，连接参数从 Properties 读取而不是硬编码。
+2. 实现 StudentDao 的增删改查：insert、deleteById、update、findById、findAll，全部用 PreparedStatement 并正确设置参数。
+3. 写一个演示 SQL 注入的对比：分别用 Statement 拼接与 PreparedStatement 参数化执行 ' OR '1'='1，打印两种结果并解释差异。
+4. 实现批量导入：addBatch 插入 100 条，中途人为制造主键冲突，验证事务回滚后一条都没进库。
+
+**验收清单**
+- [ ] 所有数据库资源都在 finally 或 try-with-resources 中关闭，连续调用 1000 次不出现连接泄漏。
+- [ ] 注入演示中 Statement 版本返回全部数据、PreparedStatement 版本返回空，结论清晰。
+- [ ] 批量导入失败后表内记录数与导入前一致。
+- [ ] DAO 层不出现任何 SQL 字符串拼接用户输入。
