@@ -21,8 +21,8 @@ package com.heima.ch02;
 
 public class ArithmeticOperator {
     public static void main(String[] args) {
-        int a = 17;
-        int b = 5;
+        int a = 23;
+        int b = 6;
         // 五种算术运算
         System.out.println("和：" + (a + b));    // 22
         System.out.println("差：" + (a - b));    // 12
@@ -35,6 +35,14 @@ public class ArithmeticOperator {
         System.out.println(10 % 3);      // 1
         // 小数精度误差（了解）
         System.out.println(1.1 + 0.1);   // 1.2000000000000002
+        int c = 6789;
+        int num = 0;
+        for (int i = 1; i <= 4; i++) {
+            int z = c % 10;
+            c =  c / 10;
+            num = num + z;
+        }
+        System.out.println(num);
     }
 }
 
