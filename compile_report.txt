@@ -1,0 +1,10 @@
+total=739 pass=739 fail=0
+errors=0 warnings=6(pre-existing)
+smoke_ch57_60=44/44
+smoke_practice=84/84
+smoke_ch53_56=44/44
+smoke_ch49_52=44/44
+smoke_ch45_48=44/44
+smoke_ch41_44=44/44
+smoke_ch37_40=44/44
+full_smoke_20261118=695/695 (ch02-56)

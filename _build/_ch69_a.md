@@ -1,0 +1,1242 @@
+### 69-01 广告系统全景：从展示到结算
+
+**知识点**
+- **广告系统的本质是"三方撮合"**：**广告主**（要曝光，愿出价）、**用户**（要看内容，不想被打扰）、**平台**（要提高收入，要保体验）——**每一次广告展示都是一次"竞价 + 排序 + 计费"**。
+- **计费模式的四种**：**CPM**（千次展示付费，品牌广告）、**CPC**（按点击付费，效果广告）、**CPA**（按转化付费，电商/金融）、**oCPX**（按目标转化出价，平台优化点击/转化）——**计费模式决定优化目标**（CPC 优化 CTR，CPA 优化 CVR）。
+- **广告链路五段**：**定向**（找出符合投放条件的广告）-> **粗排**（预估 eCPM 取 top）-> **精排**（精细预估 CTR/CVR）-> **竞价**（按机制定价）-> **计费**（曝光/点击/转化扣费）——**与 54 章推荐的漏斗同构，多了"竞价与计费"两层**。
+- **与自然流量混排**：广告与推荐内容放在同一个列表里（信息流），**用 eCPM 与推荐分统一排序**，同时控制**广告密度**（如每 5 条 1 个广告）——**体验与收入的平衡**（54-06 的重排思想）。
+- **与 54 章的关系**：推荐优化"用户满意度"，广告优化"平台收入"，两者共享召回/排序技术但目标函数不同——**很多平台用同一个排序框架，双目标融合**。
+- 易错点：只优化 CTR 不控质量（点击率高但转化差，广告主流失）；广告密度无上限（体验崩，42 章点踩率上升）；把曝光计费与点击计费混算；归因窗口不明确（转化算给谁）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class AdSystemOverview {
+    record Billing(String model, String payWhen, String optimizedMetric) {
+    }
+
+    static void billingModels() {
+        System.out.println("【四种计费模式】");
+        List<Billing> models = List.of(
+                new Billing("CPM", "曝光时", "展示质量"),
+                new Billing("CPC", "点击时", "CTR"),
+                new Billing("CPA", "转化时", "CVR"),
+                new Billing("oCPX", "转化时（平台优化）", "CTR×CVR"));
+        for (Billing b : models) {
+            System.out.printf("  %-5s 付费时机=%-12s 优化目标=%s%n",
+                    b.model(), b.payWhen(), b.optimizedMetric());
+        }
+        System.out.println();
+    }
+
+    static void pipeline() {
+        System.out.println("【广告链路五段（对比推荐四段）】");
+        String[][] rows = {
+                {"定向", "按人群/地域/时段筛广告", "≈ 召回（54-02）"},
+                {"粗排", "预估 eCPM 取 top N", "≈ 粗排（54-05）"},
+                {"精排", "精细预估 pCTR/pCVR", "≈ 精排"},
+                {"竞价", "按机制定价（GSP/VCG）", "广告特有（69-03）"},
+                {"计费", "曝光/点击/转化扣费", "广告特有（69-09）"},
+        };
+        for (String[] r : rows) {
+            System.out.printf("  %-4s %-22s %s%n", r[0], r[1], r[2]);
+        }
+        System.out.println();
+    }
+
+    static void mixedRanking() {
+        System.out.println("【广告与自然内容混排】");
+        record Item(String type, double score, double bidCents) {
+            double ecpm() {
+                return type.equals("ad") ? score * bidCents * 1000 : 0;
+            }
+        }
+        List<Item> list = new ArrayList<>(List.of(
+                new Item("organic", 0.92, 0),
+                new Item("ad", 0.03, 200),
+                new Item("organic", 0.88, 0),
+                new Item("ad", 0.02, 500)));
+        list.sort((a, b) -> Double.compare(
+                b.type().equals("ad") ? b.ecpm() : b.score() * 1000,
+                a.type().equals("ad") ? a.ecpm() : a.score() * 1000));
+        System.out.println("  统一排序（广告用 eCPM，自然内容用推荐分×1000）：");
+        for (Item i : list) {
+            System.out.printf("    %-8s score=%.2f eCPM=%.0f 元/千次%n",
+                    i.type(), i.score(), i.ecpm());
+        }
+        System.out.println("  实际另外要控：广告密度（每 5 条 1 个）、同类目打散（54-06）");
+
+        System.out.println();
+        System.out.println("【三方目标的张力】");
+        Map<String, String> tension = new LinkedHashMap<>();
+        tension.put("广告主", "要 ROI：曝光要转化成订单");
+        tension.put("用户", "要好体验：不想看无关/低质广告");
+        tension.put("平台", "要收入：短期提价，长期伤生态");
+        tension.forEach((k, v) -> System.out.printf("  %-4s %s%n", k, v));
+    }
+
+    public static void main(String[] args) {
+        billingModels();
+        pipeline();
+        mixedRanking();
+    }
+}
+```
+
+**课后练习**
+1. 画出广告链路五段图，标注每段的输入输出与优化目标，对比 54 章推荐漏斗的差异。
+2. 为信息流设计"广告密度 + eCPM 混排"规则：每 5 条插 1 个广告且同类目打散，用 20 条内容模拟排序。
+3. 思考题：为什么"只优化 CTR"会伤害广告生态？从"点击欺诈/标题党/转化差"导致的广告主流失分析。
+
+---
+
+### 69-02 广告检索：定向与倒排
+
+**知识点**
+- **定向（Targeting）是"找符合投放条件的广告"**：**人群定向**（年龄/性别/兴趣/人群包）、**地域定向**（城市/商圈/POI）、**时段定向**（工作日 9-18 点）、**设备/上下文定向**（App/页面类目）——**每个定向条件是一个倒排索引**。
+- **倒排检索的实现**：为每个定向维度建 `值 -> 广告 id 集合` 的倒排（如 `female -> {ad1, ad3, ad7}`），查询时**取各维度的交集**——**与 38-02 的倒排布尔查询完全同构**。
+- **检索的性能要求**：广告请求 QPS 极高、延迟预算极紧（RTB 要求 **100ms 内出价**）——**倒排要全内存、求交要用 Roaring Bitmap**（位图交并极快），而不是 List 遍历。
+- **扩展定向的取舍**：定向越细 -> 广告数越少（可能无广告可出）-> **需要"扩展"策略**（放宽地域到全市、放宽兴趣到类目）——**召回不足时的降级**（54-10 冷启动的广告版）。
+- **人群包（DMP）**：把"高价值用户/已购用户/相似人群"预先算成用户 id 集合（离线 46 章），在线按 userId 判断是否命中——**人群包是广告定向里最贵也最有效的维度**。
+- 易错点：定向条件用 List 求交（慢）；无召回兜底（细定向导致空广告）；人群包更新不及时（投给了已购用户）；定向维度爆炸（组合数过多）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.BitSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class AdTargeting {
+    /** 倒排：维度 -> (值 -> 广告位图) */
+    static final Map<String, Map<String, BitSet>> inverted = new LinkedHashMap<>();
+
+    record Ad(int id, String name) {
+    }
+
+    static final List<Ad> ads = new ArrayList<>();
+
+    static void index(int adId, String dimension, String value, int totalAds) {
+        inverted.computeIfAbsent(dimension, k -> new LinkedHashMap<>())
+                .computeIfAbsent(value, k -> new BitSet(totalAds + 1))
+                .set(adId);
+    }
+
+    /** 求交：按维度取交集（位图 AND） */
+    static BitSet retrieve(Map<String, String> targeting, int totalAds) {
+        BitSet result = new BitSet(totalAds + 1);
+        result.set(1, totalAds + 1);                 // 初始全集
+        Map<String, Integer> perDim = new LinkedHashMap<>();
+        for (Map.Entry<String, String> q : targeting.entrySet()) {
+            BitSet bucket = inverted.getOrDefault(q.getKey(), Map.of())
+                    .get(q.getValue());
+            int before = result.cardinality();
+            if (bucket == null) {
+                result.clear();                      // 该维度无匹配 -> 空集
+            } else {
+                result.and(bucket);
+            }
+            perDim.put(q.getKey(), result.cardinality() - before);
+        }
+        System.out.println("  各维度命中变化：" + perDim);
+        return result;
+    }
+
+    /** 召回不足时的扩展：逐级放宽 */
+    static BitSet retrieveWithFallback(Map<String, String> targeting, int totalAds) {
+        Map<String, String> relaxed = new LinkedHashMap<>(targeting);
+        BitSet result = retrieve(relaxed, totalAds);
+        if (!result.isEmpty()) {
+            return result;
+        }
+        System.out.println("  召回为空 -> 放宽兴趣到类目");
+        relaxed.remove("interest");
+        result = retrieve(relaxed, totalAds);
+        if (!result.isEmpty()) {
+            return result;
+        }
+        System.out.println("  仍为空 -> 放宽地域到全国");
+        relaxed.remove("city");
+        return retrieve(relaxed, totalAds);
+    }
+
+    public static void main(String[] args) {
+        ads.add(new Ad(1, "美妆 A"));
+        ads.add(new Ad(2, "数码 B"));
+        ads.add(new Ad(3, "美妆 C"));
+        ads.add(new Ad(4, "母婴 D"));
+        ads.add(new Ad(5, "通用 E"));
+        int total = ads.size();
+
+        index(1, "gender", "female", total);
+        index(3, "gender", "female", total);
+        index(5, "gender", "female", total);
+        index(2, "gender", "male", total);
+        index(4, "gender", "female", total);
+        index(1, "city", "杭州", total);
+        index(2, "city", "杭州", total);
+        index(4, "city", "上海", total);
+        index(5, "city", "杭州", total);
+        index(1, "interest", "beauty", total);
+        index(3, "interest", "beauty", total);
+        index(2, "interest", "digital", total);
+
+        System.out.println("【倒排索引】");
+        inverted.forEach((dim, map) -> System.out.printf("  %-8s %s%n", dim, map));
+
+        System.out.println();
+        System.out.println("【定向检索：女性 + 杭州 + 美妆】");
+        Map<String, String> q = new LinkedHashMap<>();
+        q.put("gender", "female");
+        q.put("city", "杭州");
+        q.put("interest", "beauty");
+        BitSet hits = retrieve(q, total);
+        System.out.print("  命中广告：");
+        for (int i = hits.nextSetBit(0); i >= 0; i = hits.nextSetBit(i + 1)) {
+            System.out.print(ads.get(i - 1).name() + " ");
+        }
+        System.out.println();
+
+        System.out.println();
+        System.out.println("【召回不足 -> 逐级放宽】");
+        Map<String, String> tight = new LinkedHashMap<>();
+        tight.put("gender", "male");
+        tight.put("city", "上海");
+        tight.put("interest", "beauty");
+        BitSet r = retrieveWithFallback(tight, total);
+        System.out.print("  最终命中：");
+        for (int i = r.nextSetBit(0); i >= 0; i = r.nextSetBit(i + 1)) {
+            System.out.print(ads.get(i - 1).name() + " ");
+        }
+        System.out.println();
+        System.out.println();
+        System.out.println("  性能要点：位图交并（Roaring Bitmap）比 List 求交快一个数量级");
+    }
+}
+```
+
+**课后练习**
+1. 实现倒排定向检索：3 个维度 × 10 个广告，用位图求交，验证 5 组查询的命中结果。
+2. 实现三级扩展兜底（兴趣 -> 地域 -> 全量），构造"细定向无结果"场景验证逐级放宽。
+3. 思考题：为什么 RTB 要求 100ms 内出价？从"用户等待页面渲染"与"竞价窗口"两个约束分析。
+
+---
+
+### 69-03 竞价机制：GFP、GSP 与 VCG
+
+**知识点**
+- **竞价机制决定"谁赢、付多少"**：**GFP（广义第一价格）**——出价最高者赢，付自己的出价（简单，但广告主会"压价试探"）；**GSP（广义第二价格）**——最高者赢，付**第二名的出价**（主流，激励说真话）；**VCG**——每个广告位付"自己造成的他人损失"（理论最优，复杂，实际少用）。
+- **GSP 的核心激励**：广告主**报出自己的真实估值是最优策略**（因为付费由别人决定）——**减少策略性压价，提高平台收入与配置效率**。
+- **多个广告位的定价**：GSP 下第 i 名的付费 ≈ **第 i+1 名的出价 × (第 i+1 名的点击率 ÷ 第 i 名的点击率)**——**点击率高的位置要付更多**（位置溢价）；这是"按质量调整"的定价，不是简单的第二价格。
+- **质量分（Quality Score）**：平台把 **出价 × 预估 CTR** 作为排序依据（而不是纯出价）——**低质高价广告会被高质低价挤出**，保护用户体验（69-01 的三方平衡）。
+- **底价（reserve price）**：低于底价不成交（保平台收入下限）；**动态底价**按流量质量调整（高价值流量底价更高）。
+- 易错点：把 GSP 当"付第二高出价"（实际要按点击率比值调整）；只看出价不看质量分（低质广告霸屏）；无底价（垃圾流量也被低价买走）；机制频繁变更（广告主策略混乱）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class AuctionMechanism {
+    record Bidder(String name, double bidCents, double pctr) {
+        double qualityScore() {
+            return bidCents * pctr;
+        }
+    }
+
+    record Slot(String name, int position, double ctrFactor) {
+    }
+
+    record Result(String slot, String winner, double payCents, String model) {
+    }
+
+    /** GFP：按质量分排序，付自己的出价 */
+    static List<Result> gfp(List<Bidder> bidders, List<Slot> slots) {
+        List<Bidder> ranked = new ArrayList<>(bidders);
+        ranked.sort(Comparator.comparingDouble(Bidder::qualityScore).reversed());
+        List<Result> out = new ArrayList<>();
+        for (int i = 0; i < Math.min(slots.size(), ranked.size()); i++) {
+            Bidder b = ranked.get(i);
+            out.add(new Result(slots.get(i).name(), b.name(), b.bidCents(), "GFP"));
+        }
+        return out;
+    }
+
+    /** GSP：第 i 名付 第 i+1 名的 (出价 × 点击率比) */
+    static List<Result> gsp(List<Bidder> bidders, List<Slot> slots) {
+        List<Bidder> ranked = new ArrayList<>(bidders);
+        ranked.sort(Comparator.comparingDouble(Bidder::qualityScore).reversed());
+        List<Result> out = new ArrayList<>();
+        for (int i = 0; i < Math.min(slots.size(), ranked.size()); i++) {
+            Bidder me = ranked.get(i);
+            Bidder next = i + 1 < ranked.size() ? ranked.get(i + 1) : null;
+            double pay;
+            if (next == null) {
+                pay = me.bidCents() * 0.5;                       // 无下一位：按底价折扣
+            } else {
+                pay = next.bidCents() * (next.pctr() / me.pctr());
+                pay = Math.min(pay, me.bidCents());               // 不超过自己出价
+            }
+            out.add(new Result(slots.get(i).name(), me.name(), pay, "GSP"));
+        }
+        return out;
+    }
+
+    public static void main(String[] args) {
+        List<Bidder> bidders = List.of(
+                new Bidder("广告主 A", 300, 0.02),
+                new Bidder("广告主 B", 200, 0.05),
+                new Bidder("广告主 C", 100, 0.08));
+        List<Slot> slots = List.of(
+                new Slot("首位", 1, 1.0),
+                new Slot("第 2 位", 2, 0.7));
+
+        System.out.println("【出价与质量分（出价 × pCTR）】");
+        bidders.forEach(b -> System.out.printf("  %-8s 出价=%.0f pCTR=%.2f 质量分=%.1f%n",
+                b.name(), b.bidCents(), b.pctr(), b.qualityScore()));
+
+        System.out.println();
+        System.out.println("【GFP 结果】");
+        gfp(bidders, slots).forEach(r -> System.out.printf("  %-6s %-8s 付 %.1f 分%n",
+                r.slot(), r.winner(), r.payCents()));
+
+        System.out.println();
+        System.out.println("【GSP 结果（注意付费不是简单取第二名出价）】");
+        gsp(bidders, slots).forEach(r -> System.out.printf("  %-6s %-8s 付 %.1f 分%n",
+                r.slot(), r.winner(), r.payCents()));
+
+        System.out.println();
+        System.out.println("  观察：C 出价最低但质量分最高 -> 排在首位（质量分保护体验）");
+        System.out.println("  GSP 付费 = 下一位出价 × (下一位 pCTR / 我的 pCTR)，并按我的出价封顶");
+
+        System.out.println();
+        System.out.println("【三种机制对比】");
+        Map<String, String> compare = new LinkedHashMap<>();
+        compare.put("GFP", "付自己出价；简单，但易压价试探");
+        compare.put("GSP", "按下一名调整付费；激励说真话，主流");
+        compare.put("VCG", "付自己造成的他人损失；理论最优，实现复杂");
+        compare.forEach((k, v) -> System.out.printf("  %-4s %s%n", k, v));
+    }
+}
+```
+
+**课后练习**
+1. 实现 GFP 与 GSP 两种机制，用同一组出价对比"排序、 winner、付费"，验证 GSP 付费低于 GFP。
+2. 构造"压价"场景：某广告主把出价从 300 降到 250，观察 GSP 下是否仍能保住首位（说明激励相容）。
+3. 思考题：为什么 GSP 要用"质量分"排序而不是纯出价？从"用户体验"与"平台长期收入"两个角度分析。
+
+---
+
+### 69-04 eCPM 与排序
+
+**知识点**
+- **eCPM（千次展示预期收入）是跨计费模式的统一货币**：`eCPM = 出价 × 预估点击率 × 1000`（CPC）、`eCPM = 出价 × 预估 CTR × 预估 CVR × 1000`（CPA）——**只有统一到 eCPM 才能把 CPC/CPA/CPM 广告放在一起排序**。
+- **pCTR/pCVR 的预估精度直接决定收入**：预估偏高 -> 排到前面但实际不点击（浪费曝光）；预估偏低 -> 好广告排不上（平台收入损失）——**校准（calibration）** 是必备（54-05 的 pCTR 校准）。
+- **多目标排序**：除了 eCPM，还要考虑**用户体验分**（内容质量/相关性）、**广告主 ROI**（转化质量）——**加权融合**（`score = eCPM^a × quality^b`），权重是运营旋钮。
+- **冷启动广告的处理**：新广告无历史 CTR -> 用**行业均值/相似广告**预估（54-10 的冷启动）；**探索配额**给新广告一定曝光以收集数据（54-10 的扶持池同款）。
+- **与 54 章的关系**：同一个排序框架，**目标函数不同**（推荐优化停留/转化，广告优化 eCPM）——技术上同源，产品上不同。
+- 易错点：纯 eCPM 排序（低质广告霸屏）；pCTR 未校准（系统性高估/低估）；冷启动无兜底（新广告零曝光）；不考虑广告密度（体验崩）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class EcpmRanking {
+    record Ad(String name, String model, double bidCents, double pctr, double pcvr,
+              double qualityScore) {
+        /** 统一到 eCPM（千次展示收入） */
+        double ecpm() {
+            return switch (model) {
+                case "CPM" -> bidCents;
+                case "CPC" -> bidCents * pctr * 1000;
+                case "CPA" -> bidCents * pctr * pcvr * 1000;
+                default -> 0;
+            };
+        }
+
+        /** 融合分：eCPM 与质量分的加权（质量做乘性惩罚） */
+        double blendedScore(double qualityWeight) {
+            return ecpm() * Math.pow(qualityScore, qualityWeight);
+        }
+    }
+
+    static void rank(List<Ad> ads, double qualityWeight) {
+        List<Ad> sorted = new ArrayList<>(ads);
+        sorted.sort(Comparator.comparingDouble(
+                (Ad a) -> a.blendedScore(qualityWeight)).reversed());
+        for (Ad a : sorted) {
+            System.out.printf("  %-10s %-4s 出价=%6.1f pCTR=%.3f eCPM=%8.2f 质量=%.2f 融合=%8.2f%n",
+                    a.name(), a.model(), a.bidCents(), a.pctr(), a.ecpm(),
+                    a.qualityScore(), a.blendedScore(qualityWeight));
+        }
+    }
+
+    /** 校准：把预估 pCTR 与真实 CTR 对齐（简化线性校准） */
+    static double calibrate(double pctr, double alpha, double beta) {
+        return Math.max(0, Math.min(1, alpha * pctr + beta));
+    }
+
+    public static void main(String[] args) {
+        List<Ad> ads = List.of(
+                new Ad("品牌 A（CPM）", "CPM", 30, 0.02, 0.01, 0.9),
+                new Ad("效果 B（CPC）", "CPC", 200, 0.04, 0.03, 0.8),
+                new Ad("效果的 C（CPA）", "CPA", 5000, 0.03, 0.05, 0.7),
+                new Ad("低质 D（CPC）", "CPC", 300, 0.06, 0.01, 0.3));
+
+        System.out.println("【统一到 eCPM 排序（质量权重 0）】");
+        rank(ads, 0.0);
+        System.out.println();
+        System.out.println("【加入质量惩罚（质量权重 1.5）】");
+        rank(ads, 1.5);
+        System.out.println("  低质 D 被压下去，品牌 A 上升 —— 质量权重是体验与收入的旋钮");
+
+        System.out.println();
+        System.out.println("【pCTR 校准】");
+        Map<String, String> calib = new LinkedHashMap<>();
+        calib.put("未校准", "预估值系统性偏高 -> 排序靠前但实际不点");
+        calib.put("校准后", "预估≈真实 -> eCPM 可信");
+        calib.forEach((k, v) -> System.out.printf("  %-8s %s%n", k, v));
+        System.out.printf("  示例：预估 0.04 经 alpha=0.9/beta=-0.002 校准 -> %.4f%n",
+                calibrate(0.04, 0.9, -0.002));
+
+        System.out.println();
+        System.out.println("【冷启动广告】");
+        System.out.println("  新广告无历史 CTR -> 用类目均值 0.02 做先验 + 探索配额 5% 曝光");
+    }
+}
+```
+
+**课后练习**
+1. 实现三种计费模式的 eCPM 换算与排序，验证"CPM/CPC/CPA 广告可同榜比较"。
+2. 调整质量权重（0/0.5/1.5/3），观察排序变化，给出"体验与收入平衡"的建议档位。
+3. 思考题：为什么 pCTR 校准直接决定平台收入？构造"整体高估 30%"的算例，计算多付与少收的损失。
+
+---
+
+### 69-05 预算控制与 pacing
+
+**知识点**
+- **预算控制回答"这个广告主今天还能花多少、该花多快"**：**日预算**（每天限额）、**总预算**（投放期总额）、**分时段预算**（大促期间加速）——**超额必须停止投放**，否则广告主投诉。
+- **Pacing（投放节奏）**：把预算均匀分配到全天——**太快**（上午花完，下午无曝光，广告主不满）、**太慢**（预算花不完，平台少收入）——**pacing 是"预算消耗曲线"的控制**。
+- **Pacing 的实现**：**概率丢弃**（按 `剩余预算/剩余时间` 计算放行概率）、**令牌桶**（每小时令牌 = 预算/24）、**PID 控制**（按消耗速率偏差调整）——**本质是 44 章的限流思想在预算维度的应用**。
+- **预算与竞价的联动**：出价可以**动态调整**（预算充足时按基准价，接近耗尽时降价或停止）——**避免"最后 1 小时抢预算导致出价畸高"**。
+- **预算的分布式一致性**（关键难点）：多台广告服务器并行扣预算 -> **必须原子扣减**（Redis 原子操作 25 章、或分段预分配预算）——**扣超了就是资损**（51 章思想）。
+- 易错点：预算检查在曝光后（已花超）；无 pacing（预算瞬间花完）；多机并行扣减非原子（超投）；预算变更不实时生效（运营改不了）。
+
+**示例代码**
+```java
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+public class BudgetPacing {
+    record Budget(double totalCents, double spentCents, long dayStartMs, long dayEndMs) {
+        double remaining() {
+            return Math.max(0, totalCents - spentCents);
+        }
+
+        /** 理想消耗进度：按时间线性 */
+        double expectedSpentRatio(long now) {
+            if (now <= dayStartMs) {
+                return 0;
+            }
+            if (now >= dayEndMs) {
+                return 1;
+            }
+            return (now - dayStartMs) / (double) (dayEndMs - dayStartMs);
+        }
+
+        double actualSpentRatio() {
+            return totalCents == 0 ? 0 : spentCents / totalCents;
+        }
+    }
+
+    /** 概率 pacing：放行概率 = 剩余预算比例 / 剩余时间比例（钳制到 [0,1]） */
+    static double pacingFactor(Budget b, long now) {
+        double expected = b.expectedSpentRatio(now);
+        double actual = b.actualSpentRatio();
+        if (expected <= 0) {
+            return 1.0;
+        }
+        double ratio = (1 - actual) / (1 - expected);
+        return Math.max(0, Math.min(1, ratio));
+    }
+
+    /** 模拟：按时间推进，观察消耗曲线 */
+    static void simulate(double totalBudgetCents, long dayMs, int steps) {
+        double spent = 0;
+        System.out.printf("【预算 %.0f 分，全天 %d 小时，pacing 模拟】%n", totalBudgetCents, dayMs / 3_600_000);
+        for (int i = 1; i <= steps; i++) {
+            long now = dayMs * i / steps;
+            Budget b = new Budget(totalBudgetCents, spent, 0, dayMs);
+            double factor = pacingFactor(b, now);
+            double requestCost = totalBudgetCents / steps * 1.5;   // 假设每步请求花费略高于均摊
+            double allowProb = Math.min(factor, b.remaining() / Math.max(1, requestCost));
+            double cost = requestCost * allowProb;
+            spent = Math.min(totalBudgetCents, spent + cost);
+            System.out.printf("  第%2d步 时间进度=%3.0f%% 已花=%6.0f（%3.0f%%）放行概率=%.2f%n",
+                    i, b.expectedSpentRatio(now) * 100, spent,
+                    spent / totalBudgetCents * 100, allowProb);
+        }
+        System.out.println("  结果：消耗曲线贴合时间进度，不会前半天花完");
+        System.out.println();
+    }
+
+    static void distributedBudget() {
+        System.out.println("【分布式预算扣减】");
+        Map<String, String> approaches = new LinkedHashMap<>();
+        approaches.put("集中式 Redis 原子扣减", "DECRBY 原子，简单但有网络开销与热点");
+        approaches.put("分段预分配", "每台服务器预领一段（如 5%），用完再领，减少竞争");
+        approaches.put("本地扣减 + 定期上报", "快但可能超投（需容忍阈值）");
+        approaches.forEach((k, v) -> System.out.printf("  %-18s %s%n", k, v));
+        System.out.println("  铁律：预算超投 = 资损，宁可少投不可超投（保守扣减）");
+    }
+
+    public static void main(String[] args) {
+        simulate(10_000, 24 * 3_600_000L, 8);
+
+        System.out.println("【预算不足时的降级】");
+        System.out.println("  剩余预算 < 单次最低成本 -> 停止投放并释放请求（不参与竞价）");
+        System.out.println("  剩余预算接近耗尽 -> 降低出价（避免预算被瞬间打空）");
+        System.out.println();
+
+        distributedBudget();
+        System.out.println();
+        System.out.println("  与 44 章限流的同构：限流是限「速率」，pacing 是限「总量进度」");
+    }
+}
+```
+
+**课后练习**
+1. 实现概率 pacing：给定日预算与时间，输出每小时的放行概率与消耗曲线，验证"不提前花完"。
+2. 实现分段预分配预算：3 台服务器各预领 1/3，模拟跨机扣减与"用完再领"，验证不超投。
+3. 思考题：为什么"预算超投"比"少投"更严重？从"资损不可逆"与"少投可补偿"分析（51 章思想）。
+
+---
+
+### 69-06 频控与去重
+
+**知识点**
+- **频控（Frequency Capping）是"同一个用户对同一个广告最多看几次"**：`同一广告/同一广告主/同一类目` 在 `1 天/7 天` 内最多 N 次——**无频控的用户体验是"一个广告追着你跑"**。
+- **频控的维度组合**：**广告级**（单个广告 3 次/天）、**广告主级**（同一广告主 10 次/天）、**类目级**（美妆类 20 次/天）——**层级叠加控制**（69-01 的广告密度是页面级，频控是时间级）。
+- **实现：计数 + TTL**：`key = userId + campaignId + 日期`，Redis INCR + EXPIRE——**读多写多的热点**，用批量读写 + 本地缓存降低 Redis 压力（25 章）。
+- **频控与召回的联动**：**频控过滤放在召回之后、排序之前**——太早过滤会误杀（阈值未定），太晚浪费排序算力（54-07 曝光过滤同款位置）。
+- **与 54-07 的关系**：曝光去重是"同一次浏览不重复"，频控是"一段时间内不超次数"——**两者一起构成"广告疲劳度"控制**。
+- 易错点：频控只做广告级不做用户级（同一广告主换素材轰炸）；计数用 DB（高频写打爆）；无 TTL（计数永久累积，广告再也出不去）；频控在排序后（浪费算力）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class FrequencyCap {
+    /** 频控规则：维度 + 周期 + 上限 */
+    record Rule(String dimension, int periodDays, int maxCount) {
+    }
+
+    /** 计数存储：key = userId|dimension|value|bucket */
+    static final Map<String, Integer> counters = new LinkedHashMap<>();
+
+    static String key(String userId, String dimension, String value, long dayBucket) {
+        return userId + "|" + dimension + "|" + value + "|" + dayBucket;
+    }
+
+    static long dayBucketOf(long nowMs) {
+        return nowMs / 86_400_000L;
+    }
+
+    /** 是否允许展示（未超频控） */
+    static boolean allowed(String userId, String adId, String advertiser,
+                           String category, List<Rule> rules, long nowMs) {
+        for (Rule r : rules) {
+            String value = switch (r.dimension()) {
+                case "ad" -> adId;
+                case "advertiser" -> advertiser;
+                case "category" -> category;
+                default -> "";
+            };
+            // 简化：周期用"当前天桶"，实际按周期滚动窗口
+            String k = key(userId, r.dimension(), value, dayBucketOf(nowMs));
+            int used = counters.getOrDefault(k, 0);
+            if (used >= r.maxCount()) {
+                System.out.printf("    频控拦截：%s（%s）今日已 %d 次，上限 %d%n",
+                        r.dimension(), value, used, r.maxCount());
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static void record(String userId, String adId, String advertiser, String category,
+                       List<Rule> rules, long nowMs) {
+        for (Rule r : rules) {
+            String value = switch (r.dimension()) {
+                case "ad" -> adId;
+                case "advertiser" -> advertiser;
+                case "category" -> category;
+                default -> "";
+            };
+            counters.merge(key(userId, r.dimension(), value, dayBucketOf(nowMs)), 1, Integer::sum);
+        }
+    }
+
+    public static void main(String[] args) {
+        List<Rule> rules = List.of(
+                new Rule("ad", 1, 2),
+                new Rule("advertiser", 1, 3),
+                new Rule("category", 1, 5));
+        System.out.println("【频控规则】");
+        rules.forEach(r -> System.out.printf("  %-12s 周期 %d 天，上限 %d 次%n",
+                r.dimension(), r.periodDays(), r.maxCount()));
+
+        System.out.println();
+        System.out.println("【同一用户连续请求同一广告 5 次】");
+        long now = 10 * 86_400_000L + 3_600_000L;
+        List<String> shown = new ArrayList<>();
+        for (int i = 1; i <= 5; i++) {
+            System.out.printf("  第 %d 次请求：%n", i);
+            if (allowed("u-1", "ad-1", "brand-X", "beauty", rules, now)) {
+                shown.add("ad-1#" + i);
+                record("u-1", "ad-1", "brand-X", "beauty", rules, now);
+                System.out.println("    展示成功");
+            } else {
+                System.out.println("    不展示（换其他广告或留空）");
+            }
+        }
+        System.out.println("  实际展示：" + shown.size() + " 次（广告级上限 2）");
+
+        System.out.println();
+        System.out.println("【换素材但同广告主：广告主级兜底】");
+        for (int i = 1; i <= 3; i++) {
+            String adId = "ad-x-" + i;
+            System.out.printf("  请求 %s：%s%n", adId,
+                    allowed("u-1", adId, "brand-X", "beauty", rules, now)
+                            ? "允许（新素材）" : "拦截（广告主已达上限）");
+            if (allowed("u-1", adId, "brand-X", "beauty", rules, now)) {
+                record("u-1", adId, "brand-X", "beauty", rules, now);
+            }
+        }
+
+        System.out.println();
+        System.out.println("  实现：Redis INCR + 过期（按周期设 TTL）；过滤位置在召回后、排序前（69-02）");
+    }
+}
+```
+
+**课后练习**
+1. 实现三级频控（广告/广告主/类目），用 10 次请求验证各层上限生效与拦截顺序。
+2. 实现"滚动窗口"频控（不是自然日，而是最近 24 小时），对比自然日桶的差异。
+3. 思考题：为什么频控要放在"召回后、排序前"？从"过滤成本"与"误杀风险"两个角度分析。
+
+---
+
+### 69-07 归因与转化追踪
+
+**知识点**
+- **归因（Attribution）回答"用户转化了，算哪个广告的功劳"**：用户上午看了广告 A、下午点了广告 B、晚上下单——**这单算 A（曝光归因）还是 B（点击归因）？**
+- **四种归因模型**：**最后一次点击**（最常用，简单但有偏）、**首次点击**（看重拉新）、**线性归因**（多个触点平分）、**时间衰减**（越近权重越高）——**模型选择是业务决策**（广告主与平台可能立场不同）。
+- **归因窗口**：点击后 **7 天/30 天**内的转化才算——**窗口越长归因越宽松**（广告主更愿意投），但**跨窗口的归因重叠**需要去重（同一转化只能算一次）。
+- **转化追踪的实现**：**点击时下发 click_id**（广告平台）-> 落地页/App 携带 click_id -> 转化时回传 click_id -> 平台按 click_id 找到广告并记转化——**click_id 是归因的链路凭据**。
+- **与 51/54 章的关系**：转化是"资金事件"（订单），归因是"来源标记"——**订单表要能回溯来源**（51 章审计 + 54 章数据回路）。
+- 易错点：同一转化被多个广告重复归因（重复计费/重复算 ROI）；归因窗口无配置（每次改代码）；click_id 丢失（App 跳转/跨域导致断链）；曝光归因与点击归因混算。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+public class Attribution {
+    record Touch(String clickId, String adId, String type, long atMs) {
+    }
+
+    record Conversion(String orderId, long atMs, double amountCents) {
+    }
+
+    /** 最后一次点击归因（窗口内最近一次点击） */
+    static String lastClick(List<Touch> touches, Conversion c, long windowMs) {
+        Touch best = null;
+        for (Touch t : touches) {
+            if (t.type().equals("CLICK") && c.atMs() - t.atMs() <= windowMs
+                    && c.atMs() >= t.atMs()) {
+                if (best == null || t.atMs() > best.atMs()) {
+                    best = t;
+                }
+            }
+        }
+        return best == null ? "自然流量" : best.adId();
+    }
+
+    /** 线性归因：窗口内所有触点平分 */
+    static Map<String, Double> linear(List<Touch> touches, Conversion c, long windowMs) {
+        List<Touch> valid = new ArrayList<>();
+        for (Touch t : touches) {
+            if (c.atMs() - t.atMs() <= windowMs && c.atMs() >= t.atMs()) {
+                valid.add(t);
+            }
+        }
+        Map<String, Double> credits = new LinkedHashMap<>();
+        if (valid.isEmpty()) {
+            credits.put("自然流量", c.amountCents());
+            return credits;
+        }
+        double share = c.amountCents() / valid.size();
+        for (Touch t : valid) {
+            credits.merge(t.adId(), share, Double::sum);
+        }
+        return credits;
+    }
+
+    /** 去重：同一订单只归因一次（按 orderId） */
+    static void dedupe(List<Conversion> conversions) {
+        Set<String> seen = new LinkedHashSet<>();
+        for (Conversion c : conversions) {
+            if (!seen.add(c.orderId())) {
+                System.out.println("  订单 " + c.orderId() + " 重复回传 -> 忽略（归因去重）");
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        long hour = 3_600_000L;
+        List<Touch> touches = List.of(
+                new Touch("c-1", "ad-A", "IMPRESSION", 1 * hour),
+                new Touch("c-1", "ad-A", "CLICK", 1 * hour + 60_000),
+                new Touch("c-2", "ad-B", "IMPRESSION", 5 * hour),
+                new Touch("c-2", "ad-B", "CLICK", 5 * hour + 30_000),
+                new Touch("c-3", "ad-C", "CLICK", 20 * hour));
+        Conversion conv = new Conversion("o-1", 21 * hour, 6900);
+
+        System.out.println("【触点序列】");
+        touches.forEach(t -> System.out.printf("  %-4s %-5s %s @%d h%n",
+                t.clickId(), t.adId(), t.type(), t.atMs() / hour));
+
+        System.out.println();
+        System.out.println("【转化】订单 " + conv.orderId() + " 金额 " + conv.amountCents() + " 分");
+        long window = 24 * hour;
+        System.out.printf("  最后一次点击归因 -> %s%n", lastClick(touches, conv, window));
+        System.out.printf("  线性归因 -> %s%n", linear(touches, conv, window));
+
+        System.out.println();
+        System.out.println("【归因窗口的影响】");
+        for (long w : new long[]{1 * hour, 10 * hour, 24 * hour}) {
+            System.out.printf("  窗口 %2d 小时 -> 最后点击归因=%s，线性参与触点=%d 个%n",
+                    w / hour, lastClick(touches, conv, w), linear(touches, conv, w).size());
+        }
+
+        System.out.println();
+        System.out.println("【去重】");
+        dedupe(List.of(conv, conv));
+
+        System.out.println();
+        System.out.println("【四种归因模型】");
+        Map<String, String> models = new LinkedHashMap<>();
+        models.put("最后点击", "算最近一次点击；主流，偏重收口环节");
+        models.put("首次点击", "算最早一次触点；偏重拉新");
+        models.put("线性", "所有触点平分；公平但分散");
+        models.put("时间衰减", "越近权重越高；折衷");
+        models.forEach((k, v) -> System.out.printf("  %-6s %s%n", k, v));
+    }
+}
+```
+
+**课后练习**
+1. 实现四种归因模型，用同一批触点与转化对比各自分到的金额，说明差异来源。
+2. 实现归因去重：同一订单被重复回传 3 次，只记一次，验证金额不重复累计。
+3. 思考题：为什么"归因窗口"是广告主与平台的博弈点？从"平台想算更多转化"与"广告主要求真实性"分析。
+
+---
+
+### 69-08 反作弊：点击欺诈识别
+
+**知识点**
+- **广告作弊的动机很直接：点击能收钱**——**CPC/CPA 模式下，每一次无效点击都是平台与广告主的资损**（51 章资金安全的广告版）。
+- **四类作弊**：**机器刷量**（脚本/模拟器批量点击）、**点击农场**（真人众包点击）、**竞争对手恶意点击**（消耗对方预算）、**归因作弊**（伪造 click_id 抢归因）。
+- **检测的四类特征**：**设备指纹**（同一设备/IP/IMEI 高频点击）、**行为特征**（点击间隔极短、无滚动/停留、转化率为 0）、**时序特征**（集中在某些 IP 段/时间段）、**归因特征**（点击到转化的时间分布异常）。
+- **处置分级**（58-10 的动作分级）：**观察**（记录不扣费）-> **过滤**（不计费不归因）-> **封禁**（设备/IP/账号）——**误伤要可申诉**（58-09 的申诉闭环）。
+- **与 58 章的关系**：反作弊就是"广告域的风控"——**规则引擎 + 特征 + 决策链完全同构**，只是特征与动作不同。
+- 易错点：只看点击量不看转化（刷点击但无转化）；阈值太严误伤真实用户（正常用户也可能快速点击）；只封设备不封账号（换设备继续刷）；作弊检测同步阻塞（拖慢请求，应异步 + 事后扣回）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class ClickFraud {
+    record Click(String clickId, String deviceId, String ip, long atMs,
+                 boolean converted, String adId) {
+    }
+
+    enum Verdict {
+        NORMAL, SUSPICIOUS, FRAUD
+    }
+
+    /** 多维特征打分 */
+    static Map<String, Integer> features(List<Click> clicks, String deviceId) {
+        Map<String, Integer> score = new LinkedHashMap<>();
+        List<Click> mine = clicks.stream()
+                .filter(c -> c.deviceId().equals(deviceId)).toList();
+        // 1) 点击频次：10 分钟内超过 20 次
+        long windowMs = 600_000;
+        long recent = mine.stream().filter(c -> c.atMs() >= mine.get(mine.size() - 1).atMs()
+                - windowMs).count();
+        score.put("高频点击", recent > 20 ? 40 : 0);
+        // 2) 转化率：点击超过 10 次且 0 转化
+        score.put("零转化", mine.size() > 10 && mine.stream().noneMatch(Click::converted) ? 30 : 0);
+        // 3) 点击间隔：连续两次间隔 < 1 秒
+        int rapid = 0;
+        for (int i = 1; i < mine.size(); i++) {
+            if (mine.get(i).atMs() - mine.get(i - 1).atMs() < 1000) {
+                rapid++;
+            }
+        }
+        score.put("秒级连点", rapid > 3 ? 25 : 0);
+        // 4) IP 聚集：同 IP 设备数
+        String ip = mine.get(mine.size() - 1).ip();
+        long devicesOnIp = clicks.stream().filter(c -> c.ip().equals(ip))
+                .map(Click::deviceId).distinct().count();
+        score.put("IP 聚集", devicesOnIp > 20 ? 30 : 0);
+        return score;
+    }
+
+    static Verdict judge(Map<String, Integer> score) {
+        int total = score.values().stream().mapToInt(Integer::intValue).sum();
+        if (total >= 70) {
+            return Verdict.FRAUD;
+        }
+        if (total >= 40) {
+            return Verdict.SUSPICIOUS;
+        }
+        return Verdict.NORMAL;
+    }
+
+    public static void main(String[] args) {
+        List<Click> clicks = new ArrayList<>();
+        // 正常设备：3 次点击，1 次转化，间隔正常
+        for (int i = 0; i < 3; i++) {
+            clicks.add(new Click("n-" + i, "device-normal", "10.0.0.1",
+                    1_000_000L + i * 300_000L, i == 2, "ad-A"));
+        }
+        // 作弊设备：25 次秒级点击，0 转化
+        for (int i = 0; i < 25; i++) {
+            clicks.add(new Click("f-" + i, "device-fraud", "192.168.1.9",
+                    2_000_000L + i * 500L, false, "ad-B"));
+        }
+        // 同 IP 大量设备（点击农场）
+        for (int d = 0; d < 25; d++) {
+            clicks.add(new Click("farm-" + d, "device-farm-" + d, "172.16.0.9",
+                    3_000_000L + d * 2000L, false, "ad-C"));
+        }
+
+        System.out.println("【逐设备评估】");
+        for (String device : new String[]{"device-normal", "device-fraud", "device-farm-0"}) {
+            Map<String, Integer> f = features(clicks, device);
+            Verdict v = judge(f);
+            System.out.printf("  %-16s 特征=%s -> %s%n", device, f, v);
+        }
+
+        System.out.println();
+        System.out.println("【处置动作】");
+        Map<String, String> actions = new LinkedHashMap<>();
+        actions.put("NORMAL", "正常计费与归因");
+        actions.put("SUSPICIOUS", "记为观察态：不计费，样本留存待人工复核");
+        actions.put("FRAUD", "过滤点击（不计费、不归因）+ 设备/IP 进黑名单 + 异步扣回已计费");
+        actions.forEach((k, v) -> System.out.printf("  %-10s %s%n", k, v));
+
+        System.out.println();
+        System.out.println("  原则：检测异步化（不阻塞竞价），处置可申诉（58-09），黑名单有 TTL（58-07）");
+    }
+}
+```
+
+**课后练习**
+1. 实现四特征打分器（频次/转化率/间隔/IP 聚集），用 3 类设备验证判定结果，并调整阈值观察误伤。
+2. 实现"异步扣回"：识别为作弊后，把已计费的点击金额从广告主账单中扣回，输出对账差异。
+3. 思考题：为什么反作弊要"异步检测 + 事后扣回"而不是"同步拦截"？从竞价延迟与误伤成本分析。
+
+---
+
+### 69-09 广告计费与对账
+
+**知识点**
+- **计费的三类事件**：**曝光**（CPM 扣费）、**点击**（CPC 扣费）、**转化**（CPA 扣费）——**每次计费都要有幂等键**（eventId/clickId），**重复上报不能重复扣费**（39/51 章原则）。
+- **计费的两层结构**：**明细（ledger）**（每次计费一条记录：广告主/广告/事件/金额/时间）+ **汇总（账单）**（按日/月聚合）——**明细是事实源，汇总是派生**（63-06 的事实表思想）。
+- **扣费与预算的原子性**：扣费成功才允许展示/归因 + 预算扣减（69-05）——**两者要么都成，要么都不成**（本地事务或原子脚本）。
+- **对账的三个维度**：**平台内部**（明细汇总 = 账单）、**与广告主**（平台账单 vs 广告主后台数据）、**与流量方**（平台计费 vs 媒体结算）——**差异必须能定位到具体事件**（51-05 对账思想）。
+- **无效流量的扣回**：作弊点击（69-08）事后识别 -> 生成"负向明细"（冲正）-> 下期账单抵扣——**不能修改历史明细**（append-only 51-10）。
+- 易错点：重复上报重复扣费（无幂等）；扣费与预算不同步（超投或漏扣）；账单与明细对不上（无法解释）；扣回改历史记录（审计失效）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class AdBilling {
+    record BillableEvent(String eventId, String advertiser, String adId, String type,
+                         double amountCents) {
+    }
+
+    record LedgerEntry(String eventId, String advertiser, String type, double amountCents,
+                       boolean reversal, String note) {
+    }
+
+    static final List<LedgerEntry> ledger = new ArrayList<>();
+    static final Map<String, Double> budgetLeft = new LinkedHashMap<>();
+    static final Map<String, Boolean> processed = new HashMap<>();
+
+    static void initBudget() {
+        budgetLeft.put("brand-A", 10_000.0);
+        budgetLeft.put("brand-B", 5_000.0);
+    }
+
+    /** 计费：幂等 + 预算原子扣减 */
+    static String charge(BillableEvent e) {
+        if (processed.containsKey(e.eventId())) {
+            return "重复事件 " + e.eventId() + " -> 忽略（幂等）";
+        }
+        double left = budgetLeft.getOrDefault(e.advertiser(), 0.0);
+        if (left < e.amountCents()) {
+            return "预算不足（剩余 " + left + "）-> 不计费";
+        }
+        budgetLeft.put(e.advertiser(), left - e.amountCents());
+        ledger.add(new LedgerEntry(e.eventId(), e.advertiser(), e.type(),
+                e.amountCents(), false, "正常计费"));
+        processed.put(e.eventId(), true);
+        return "计费成功 " + e.amountCents() + " 分（剩余预算 "
+                + budgetLeft.get(e.advertiser()) + "）";
+    }
+
+    /** 冲正：作弊识别后负向明细（不改历史） */
+    static void reverse(String eventId, String reason) {
+        for (LedgerEntry e : ledger) {
+            if (e.eventId().equals(eventId) && !e.reversal()) {
+                ledger.add(new LedgerEntry(eventId + "-REV", e.advertiser(), e.type(),
+                        -e.amountCents(), true, "冲正：" + reason));
+                budgetLeft.merge(e.advertiser(), e.amountCents(), Double::sum);
+                System.out.printf("  冲正 %s：%+.0f 分（%s）%n", eventId, -e.amountCents(), reason);
+                return;
+            }
+        }
+    }
+
+    static double sumBy(String advertiser, boolean includeReversal) {
+        double sum = 0;
+        for (LedgerEntry e : ledger) {
+            if (e.advertiser().equals(advertiser) && (includeReversal || !e.reversal())) {
+                sum += e.amountCents();
+            }
+        }
+        return sum;
+    }
+
+    public static void main(String[] args) {
+        initBudget();
+        System.out.println("【计费流水】");
+        List<BillableEvent> events = List.of(
+                new BillableEvent("e-1", "brand-A", "ad-1", "IMPRESSION", 30),
+                new BillableEvent("e-2", "brand-A", "ad-1", "CLICK", 200),
+                new BillableEvent("e-2", "brand-A", "ad-1", "CLICK", 200),
+                new BillableEvent("e-3", "brand-B", "ad-2", "CLICK", 150));
+        for (BillableEvent e : events) {
+            System.out.printf("  %-4s %-8s %-10s %.0f 分 -> %s%n",
+                    e.eventId(), e.advertiser(), e.type(), e.amountCents(), charge(e));
+        }
+
+        System.out.println();
+        System.out.println("【作弊识别后冲正 e-2】");
+        reverse("e-2", "设备指纹命中刷量");
+
+        System.out.println();
+        System.out.println("【对账】");
+        for (String adv : new String[]{"brand-A", "brand-B"}) {
+            double gross = sumBy(adv, false);
+            double net = sumBy(adv, true);
+            System.out.printf("  %-8s 毛计费=%.0f 冲正后净额=%.0f%n", adv, gross, net);
+        }
+        System.out.println();
+
+        System.out.println("【明细（append-only）】");
+        ledger.forEach(e -> System.out.printf("  %-8s %-8s %-10s %+8.0f %s%n",
+                e.eventId(), e.advertiser(), e.type(), e.amountCents(), e.note()));
+
+        System.out.println();
+        System.out.println("  对账三层：明细汇总=账单 / 平台 vs 广告主后台 / 平台 vs 媒体结算");
+        System.out.println("  冲正用负向明细，绝不修改历史（51-10 审计原则）");
+    }
+}
+```
+
+**课后练习**
+1. 实现计费中心：幂等 + 预算原子扣减 + 冲正，用 4 个事件（含 1 个重复）验证不重复扣费。
+2. 实现对账：对比"平台明细汇总"与"模拟的广告主后台数据"，找出差异事件并解释原因。
+3. 思考题：为什么冲正要"负向明细"而不是"删除原记录"？从审计证据与账单可解释性分析。
+
+---
+
+### 69-10 实时竞价链路（RTB）
+
+**知识点**
+- **RTB（Real-Time Bidding）是最高强度的广告链路**：用户打开页面 -> 媒体发出竞价请求（带用户/上下文）-> 多个 DSP 在 **100ms 内**返回出价 -> 价高者得 -> 展示广告 -> 计费——**整个链路包含网络往返、召回、预估、竞价、渲染，必须在 100ms 内完成**。
+- **延迟预算的分配**（44-08 的极端版）：网络 30ms（媒体<->平台）+ 召回 20ms + 预估 20ms + 竞价 5ms + 渲染 10ms + 缓冲 15ms——**每一段都要有超时降级**（超时即不出价）。
+- **超时即放弃的策略**：广告竞价"错过就没有"——**宁可不出价也不能超时**（超时会拖慢用户页面渲染，伤害媒体体验）；**降级优先级**：精排超时 -> 用粗排分；预估超时 -> 用类目均值。
+- **与实时链路的关系**：RTB 是**同步链路**（请求-响应），与 43 章的异步流处理不同——**但特征更新、曝光回流仍走异步**（Kafka/流处理）。
+- **工程要点**：**全内存计算**（无 DB 查询）、**预估模型轻量化**（小模型/预计算向量）、**连接池复用**、**无 GC 停顿**（30 章调优，低延迟场景 G1/ZGC）。
+- 易错点：链路中查数据库（必超时）；无超时降级（拖垮媒体）；预估模型太重（GPU 推理调不起）；日志同步写（IO 阻塞）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class RtbPipeline {
+    record Stage(String name, long budgetMs, long costMs) {
+        boolean overBudget() {
+            return costMs > budgetMs;
+        }
+    }
+
+    record BidResult(String stage, String action, long elapsedMs, boolean degraded) {
+    }
+
+    /** 分阶段执行 + 超时降级 */
+    static List<BidResult> execute(List<Stage> stages, long totalBudgetMs) {
+        List<BidResult> results = new ArrayList<>();
+        long elapsed = 0;
+        boolean anyTimeout = false;
+        for (Stage s : stages) {
+            long remain = totalBudgetMs - elapsed;
+            if (remain <= 0) {
+                results.add(new BidResult(s.name(), "SKIP（总预算耗尽）", elapsed, true));
+                anyTimeout = true;
+                continue;
+            }
+            if (s.overBudget() || s.costMs() > remain) {
+                results.add(new BidResult(s.name(),
+                        "降级（超时 " + s.costMs() + "ms>" + Math.min(s.budgetMs(), remain) + "ms）",
+                        elapsed + Math.min(remain, s.budgetMs()), true));
+                elapsed += Math.min(remain, s.budgetMs());
+                anyTimeout = true;
+            } else {
+                results.add(new BidResult(s.name(), "正常", elapsed + s.costMs(), false));
+                elapsed += s.costMs();
+            }
+        }
+        System.out.printf("  总耗时 %dms / 预算 %dms -> %s%n", elapsed, totalBudgetMs,
+                anyTimeout ? "有降级" : "全正常");
+        return results;
+    }
+
+    static void normalPath() {
+        System.out.println("【正常链路（预算 100ms）】");
+        List<Stage> stages = List.of(
+                new Stage("网络接收", 15, 8),
+                new Stage("召回（内存倒排）", 20, 12),
+                new Stage("pCTR 预估（小模型）", 25, 15),
+                new Stage("竞价与定价", 5, 3),
+                new Stage("响应组装", 10, 4));
+        execute(stages, 100).forEach(r -> System.out.printf(
+                "  %-18s %-28s elapsed=%dms%s%n", r.stage(), r.action(), r.elapsedMs(),
+                r.degraded() ? "（降级）" : ""));
+        System.out.println();
+    }
+
+    static void timeoutPath() {
+        System.out.println("【预估超时：降级用类目均值】");
+        List<Stage> stages = List.of(
+                new Stage("网络接收", 15, 12),
+                new Stage("召回", 20, 18),
+                new Stage("pCTR 预估（主模型超时）", 25, 60),
+                new Stage("竞价与定价", 5, 3),
+                new Stage("响应组装", 10, 4));
+        execute(stages, 100).forEach(r -> System.out.printf(
+                "  %-22s %-32s elapsed=%dms%s%n", r.stage(), r.action(), r.elapsedMs(),
+                r.degraded() ? "（降级）" : ""));
+        System.out.println("  降级策略：主模型超时 -> 用类目均值 pCTR（仍能出价，不超时）");
+        System.out.println();
+    }
+
+    static void engineering() {
+        System.out.println("【工程约束】");
+        Map<String, String> constraints = new LinkedHashMap<>();
+        constraints.put("零 DB 查询", "全部走内存/本地缓存（一次 DB 往返 1~5ms，必超时）");
+        constraints.put("模型轻量", "小模型/预计算向量，避免 GPU 推理调用");
+        constraints.put("连接复用", "HTTP 长连接/连接池（握手成本不可忽略）");
+        constraints.put("GC 控制", "G1/ZGC + 低分配（30 章调优），避免 STOP-THE-WORLD");
+        constraints.put("日志异步", "同步写日志 = IO 阻塞（42-02 同款）");
+        constraints.forEach((k, v) -> System.out.printf("  %-10s %s%n", k, v));
+        System.out.println();
+        System.out.println("  与 43 章的差异：RTB 是同步链路，错过即放弃；异步流处理可重放补算");
+    }
+
+    public static void main(String[] args) {
+        normalPath();
+        timeoutPath();
+        engineering();
+    }
+}
+```
+
+**课后练习**
+1. 实现 RTB 链路模拟：5 段各带预算与耗时，注入"预估超时"，验证降级后仍能出价且不超总预算。
+2. 分析各段延迟预算：给定总预算 100ms，重新分配 5 段的时间并说明依据（哪些必须快）。
+3. 思考题：为什么 RTB 宁可不出价也不能超时？从"媒体页面渲染阻塞"与"用户体验"分析。
+
+---
+
+### 69-11 综合案例：信息流广告投放
+
+**知识点**
+- **把本章收口成完整链路**：**请求**（用户/上下文）-> **定向召回**（倒排交 69-02）-> **频控过滤**（69-06）-> **eCPM 排序**（69-03/04）-> **预算 pacing**（69-05）-> **混排**（广告密度 69-01）-> **计费**（幂等 + 冲正 69-09）-> **归因**（69-07）-> **反作弊**（69-08）。
+- **一次投放的完整验收**：**不出超预算**（pacing + 原子扣减）、**不重复计费**（幂等）、**不超频控**（69-06）、**作弊可扣回**（冲正）、**归因可解释**（模型 + 窗口）、**体验可控**（广告密度）。
+- **与 54 章的对照**：推荐在"相关性"上优化，广告在"eCPM × 质量"上优化——**同一个排序框架，不同的目标函数**；**两者可以共用一个混排引擎**。
+- **数据回路**：曝光/点击/转化回流 -> 训练 pCTR/pCVR（54-08/46 章）-> 提升预估精度 -> 提升收入——**闭环是广告系统的核心资产**。
+- 易错点：链路缺环（无频控/无 pacing）；计费与预算不一致；作弊无扣回；指标只看收入不看 ROI（广告主流失）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class FeedAdCase {
+    record Ad(String adId, String advertiser, String category, double bidCents,
+              double pctr, double quality) {
+        double ecpm() {
+            return bidCents * pctr * 1000;
+        }
+
+        double blended(double w) {
+            return ecpm() * Math.pow(quality, w);
+        }
+    }
+
+    record Context(String userId, String category) {
+    }
+
+    static final Map<String, Integer> impressions = new HashMap<>();
+    static final Map<String, Double> budgets = new LinkedHashMap<>();
+    static final List<String> ledger = new ArrayList<>();
+
+    static void init() {
+        budgets.put("brand-A", 500.0);
+        budgets.put("brand-B", 300.0);
+    }
+
+    /** 完整投放：召回 -> 频控 -> 排序 -> pacing -> 计费 */
+    static void serve(Context ctx, List<Ad> candidates, double qualityWeight,
+                      int maxPerUserPerAd) {
+        System.out.println("【请求】user=" + ctx.userId() + " 上下文类目=" + ctx.category());
+        // 1) 召回：类目匹配 + 全类目兜底
+        List<Ad> recalled = new ArrayList<>();
+        for (Ad ad : candidates) {
+            if (ad.category().equals(ctx.category()) || ad.category().equals("all")) {
+                recalled.add(ad);
+            }
+        }
+        System.out.println("  召回 " + recalled.size() + " 个");
+
+        // 2) 频控
+        List<Ad> filtered = new ArrayList<>();
+        for (Ad ad : recalled) {
+            String key = ctx.userId() + "#" + ad.adId();
+            int seen = impressions.getOrDefault(key, 0);
+            if (seen < maxPerUserPerAd) {
+                filtered.add(ad);
+            } else {
+                System.out.println("  频控过滤 " + ad.adId() + "（已展示 " + seen + " 次）");
+            }
+        }
+
+        // 3) 排序（eCPM × 质量）
+        filtered.sort(Comparator.comparingDouble((Ad a) -> a.blended(qualityWeight)).reversed());
+        if (filtered.isEmpty()) {
+            System.out.println("  无可投放广告 -> 留空（不占广告位）");
+            return;
+        }
+        Ad winner = filtered.get(0);
+        System.out.printf("  排序结果：%s%n", filtered.stream()
+                .map(a -> a.adId() + "(" + String.format("%.1f", a.blended(qualityWeight)) + ")")
+                .toList());
+
+        // 4) pacing：预算检查
+        double cost = winner.bidCents();               // 简化为一次点击成本
+        double left = budgets.getOrDefault(winner.advertiser(), 0.0);
+        if (left < cost) {
+            System.out.println("  预算耗尽 -> 放弃投放");
+            return;
+        }
+        budgets.put(winner.advertiser(), left - cost);
+
+        // 5) 计费 + 曝光计数
+        ledger.add(winner.adId() + " " + winner.advertiser() + " " + cost);
+        impressions.merge(ctx.userId() + "#" + winner.adId(), 1, Integer::sum);
+        System.out.printf("  投放 %s，计费 %.0f 分（剩余预算 %.0f）%n",
+                winner.adId(), cost, budgets.get(winner.advertiser()));
+    }
+
+    public static void main(String[] args) {
+        init();
+        List<Ad> candidates = List.of(
+                new Ad("ad-1", "brand-A", "beauty", 200, 0.04, 0.9),
+                new Ad("ad-2", "brand-B", "beauty", 300, 0.03, 0.6),
+                new Ad("ad-3", "brand-A", "all", 150, 0.02, 0.8),
+                new Ad("ad-4", "brand-B", "digital", 500, 0.05, 0.7));
+
+        Context ctx = new Context("u-1", "beauty");
+        for (int i = 1; i <= 4; i++) {
+            System.out.println();
+            serve(ctx, candidates, 1.5, 2);
+        }
+
+        System.out.println();
+        System.out.println("【账单与台账】");
+        Map<String, Double> billing = new LinkedHashMap<>();
+        for (String l : ledger) {
+            String[] parts = l.split(" ");
+            billing.merge(parts[1], Double.parseDouble(parts[2]), Double::sum);
+        }
+        billing.forEach((adv, amount) -> System.out.printf("  %-8s 计费 %.0f 分%n", adv, amount));
+        System.out.println();
+
+        System.out.println("【链路验收】");
+        Map<String, String> gates = new LinkedHashMap<>();
+        gates.put("预算", "不超预算（pacing + 扣减原子）");
+        gates.put("计费", "幂等（eventId 去重）+ 可冲正");
+        gates.put("频控", "用户×广告上限生效");
+        gates.put("排序", "eCPM × 质量（体验可控）");
+        gates.put("数据回路", "曝光/点击回流训练 pCTR（54-08）");
+        gates.forEach((k, v) -> System.out.printf("  %-6s %s%n", k, v));
+    }
+}
+```
+
+**课后练习**
+1. 端到端实现信息流投放（召回/频控/排序/pacing/计费），用 6 次请求验证频控与预算都生效。
+2. 加入"作弊过滤与冲正"：识别一次作弊点击，从账单中扣回，输出对账前后差异。
+3. 思考题：为什么广告系统必须建"数据回路"？从"pCTR 精度决定收入"与"广告主 ROI 决定留存"两个角度分析。

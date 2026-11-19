@@ -1,0 +1,1275 @@
+### 73-01 文件服务全景：上传、存储、下载
+
+**知识点**
+- **文件服务的三件事**：**上传**（怎么把字节可靠地送上来）、**存储**（放哪里、怎么组织）、**下载**（怎么快速安全地取走）——**看似简单，实际是企业系统最容易出事故的模块**（大文件超时、磁盘打满、越权下载、图片被拖垮带宽）。
+- **文件的三层数据**：**元数据**（文件名/大小/类型/hash/归属人/存储路径——存数据库）、**二进制内容**（存对象存储/文件系统）、**衍生文件**（缩略图/转码结果/水印版——异步生成）——**元数据与内容分离**是标准架构（46-03 对象存储思想）。
+- **上传方式的演进**：**表单直传**（小文件，一次请求）-> **分片上传**（大文件，切片并发）-> **直传对象存储**（客户端拿签名直传到 OSS，不经过应用服务器——省带宽与内存）。
+- **与 37/46 章的关系**：37-06 讲容器的数据卷（存储位置）、46-03 讲对象存储的分层与成本——**本章讲业务侧怎么用它们**。
+- **容量与成本**：文件是"只增不减"的存储大户——**生命周期策略（73-10）与去重（73-03）是降本两大手段**。
+- 易错点：把文件存数据库 blob（数据库膨胀、备份慢）；应用服务器中转所有上传（带宽与内存双爆）；文件名直接用用户上传的名字（路径穿越 36 章）；不校验类型与大小（上传可执行文件）。
+
+**示例代码**
+```java
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class FileServiceOverview {
+    record FileMeta(String fileId, String originalName, String contentType, long sizeBytes,
+                    String hash, String storageKey, String ownerId, long createdAtMs) {
+    }
+
+    record StorageLayer(String layer, String what, String where, String note) {
+    }
+
+    static void threeLayers() {
+        System.out.println("【文件的三层数据】");
+        List<StorageLayer> layers = List.of(
+                new StorageLayer("元数据", "名称/大小/类型/hash/归属", "MySQL", "可检索、可审计"),
+                new StorageLayer("二进制内容", "文件本体", "对象存储 / 本地盘", "按 storageKey 寻址"),
+                new StorageLayer("衍生文件", "缩略图/水印/转码", "对象存储（同桶不同前缀）", "异步生成，可重建"));
+        for (StorageLayer l : layers) {
+            System.out.printf("  %-8s %-24s %-24s %s%n", l.layer(), l.what(), l.where(), l.note());
+        }
+        System.out.println();
+    }
+
+    static void uploadEvolution() {
+        System.out.println("【上传方式演进】");
+        String[][] rows = {
+                {"表单直传", "< 5MB 小文件", "一次请求，应用服务器中转"},
+                {"分片上传", "大文件（100MB~数 GB）", "切片并发 + 断点续传（73-02）"},
+                {"直传对象存储", "任意大小", "应用只发签名，客户端直传 OSS（省带宽）"},
+        };
+        for (String[] r : rows) {
+            System.out.printf("  %-14s %-22s %s%n", r[0], r[1], r[2]);
+        }
+        System.out.println();
+    }
+
+    static void metadataDesign() {
+        System.out.println("【元数据表设计要点】");
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("file_id", "业务主键（雪花 39-07），不暴露路径");
+        fields.put("original_name", "仅展示用，绝不用于拼路径");
+        fields.put("content_type", "MIME 类型（校验 + 下载头）");
+        fields.put("size_bytes", "大小（配额统计 + 校验）");
+        fields.put("hash", "内容摘要（秒传 73-03 + 完整性校验）");
+        fields.put("storage_key", "存储层寻址键（如 yyyy/MM/dd/uuid）");
+        fields.put("owner_id", "归属（越权下载防护 73-06）");
+        fields.put("status", "UPLOADING/READY/DELETED（生命周期）");
+        fields.forEach((k, v) -> System.out.printf("  %-14s %s%n", k, v));
+        System.out.println();
+        System.out.println("  反模式：用 original_name 拼存储路径 -> 路径穿越与重名覆盖");
+    }
+
+    public static void main(String[] args) {
+        threeLayers();
+        uploadEvolution();
+        metadataDesign();
+    }
+}
+```
+
+**课后练习**
+1. 为你的文件服务设计元数据表（≥8 字段），标注每字段的用途与索引需求。
+2. 画出三种上传方式的时序（表单直传/分片/直传 OSS），标注应用服务器承担的职责变化。
+3. 思考题：为什么"元数据与二进制分离"是标准架构？从"检索需求"与"存储成本"两个角度分析。
+
+---
+
+### 73-02 分片上传与断点续传
+
+**知识点**
+- **分片上传解决两个问题**：**大文件超时**（一次传 2GB 必然失败）与**网络中断**（重传整个文件）——**切 5~10MB/shards 并发上传，失败只重传失败分片**。
+- **分片上传的完整流程**：**初始化**（服务端返回 uploadId + 分片大小）-> **逐片上传**（带 uploadId + 片序号 + 片 hash）-> **合并**（所有分片到齐后校验总 hash 并合并）-> **清理**（临时分片过期删除）。
+- **断点续传**：客户端记录"已上传分片列表"，恢复时**先查询服务端已收到的分片**（服务端要记录每片状态），跳过已传的——**进度条与续传依赖这份清单**。
+- **并发与顺序**：分片可**并发上传**（提升吞吐），但**合并要按序号顺序**；**最后一片写完触发合并**，或由客户端显式调"完成"接口（推荐后者，因为并发下无法判断"它是最后一片"）。
+- **失败与清理**：**分片过期**（24 小时未合并则清理临时片，防垃圾堆积）；**合并失败**（hash 不符）要能定位到哪个分片——**每片单独存 hash**。
+- 易错点：分片大小固定不可调（弱网应更小）；不记录分片状态（无法续传）；合并时按到达顺序拼接（数据错乱）；无过期清理（存储被垃圾占满）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class MultipartUpload {
+    record Part(int index, String hash, byte[] data) {
+    }
+
+    record Session(String uploadId, long totalSize, int partSize, int partCount,
+                   Map<Integer, String> receivedParts, long createdAtMs) {
+        boolean complete() {
+            return receivedParts.size() == partCount;
+        }
+
+        List<Integer> missing() {
+            List<Integer> out = new ArrayList<>();
+            for (int i = 0; i < partCount; i++) {
+                if (!receivedParts.containsKey(i)) {
+                    out.add(i);
+                }
+            }
+            return out;
+        }
+    }
+
+    static final Map<String, Session> sessions = new LinkedHashMap<>();
+
+    static Session init(String uploadId, long totalSize, int partSize) {
+        int count = (int) ((totalSize + partSize - 1) / partSize);
+        Session s = new Session(uploadId, totalSize, partSize, count,
+                new LinkedHashMap<>(), 1_000_000L);
+        sessions.put(uploadId, s);
+        System.out.printf("  初始化 %s：总大小=%d 分片=%d 片数=%d%n",
+                uploadId, totalSize, partSize, count);
+        return s;
+    }
+
+    static void uploadPart(String uploadId, int index, String hash, int bytes) {
+        Session s = sessions.get(uploadId);
+        if (s == null) {
+            System.out.println("  会话不存在：" + uploadId);
+            return;
+        }
+        s.receivedParts().put(index, hash);
+        System.out.printf("  收到分片 %d（%d 字节，hash=%s）-> 已收 %d/%d%n",
+                index, bytes, hash, s.receivedParts().size(), s.partCount());
+    }
+
+    /** 续传：查询已收分片，只补缺失 */
+    static void resume(String uploadId) {
+        Session s = sessions.get(uploadId);
+        System.out.println("  断点续传查询：" + uploadId);
+        System.out.println("    已收分片：" + s.receivedParts().keySet());
+        System.out.println("    缺失分片：" + s.missing() + " -> 只补这些");
+    }
+
+    /** 合并：校验完整性与总 hash */
+    static String complete(String uploadId, String expectedHash) {
+        Session s = sessions.get(uploadId);
+        if (s == null) {
+            return "会话不存在";
+        }
+        if (!s.complete()) {
+            return "分片未齐，缺 " + s.missing();
+        }
+        // 模拟合并后的总 hash（用分片 hash 拼接的简化摘要）
+        String merged = String.join("", s.receivedParts().values());
+        if (expectedHash != null && !expectedHash.equals(merged)) {
+            return "合并失败：总 hash 不符（分片损坏）";
+        }
+        return "合并成功：" + s.partCount() + " 片，共 " + s.totalSize() + " 字节";
+    }
+
+    static void cleanup(long nowMs, long ttlMs) {
+        System.out.println("【过期清理】");
+        sessions.forEach((id, s) -> {
+            if (nowMs - s.createdAtMs() > ttlMs && !s.complete()) {
+                System.out.printf("  清理 %s（未完成且超过 %d 小时）%n", id, ttlMs / 3_600_000);
+            }
+        });
+        System.out.println();
+    }
+
+    public static void main(String[] args) {
+        // 模拟 25MB 文件，5MB 一片
+        init("up-1", 25L * 1024 * 1024, 5 * 1024 * 1024);
+        uploadPart("up-1", 0, "h0", 5 * 1024 * 1024);
+        uploadPart("up-1", 1, "h1", 5 * 1024 * 1024);
+        System.out.println("  网络中断...");
+        resume("up-1");
+
+        uploadPart("up-1", 2, "h2", 5 * 1024 * 1024);
+        uploadPart("up-1", 3, "h3", 5 * 1024 * 1024);
+        uploadPart("up-1", 4, "h4", 5 * 1024 * 1024);
+        System.out.println();
+        System.out.println("【合并】" + complete("up-1", null));
+        System.out.println("【hash 校验失败场景】" + complete("up-1", "wrong-hash"));
+
+        System.out.println();
+        init("up-2", 10L * 1024 * 1024, 5 * 1024 * 1024);
+        uploadPart("up-2", 0, "x0", 5 * 1024 * 1024);
+        cleanup(1_000_000L + 25L * 3_600_000, 24L * 3_600_000);
+        System.out.println("  要点：分片可并发、续传靠服务端记录、合并要校验、临时片要过期");
+    }
+}
+```
+
+**课后练习**
+1. 实现分片上传：初始化/上传/续传查询/合并/过期清理，用"中断后恢复"场景验证只补缺失分片。
+2. 实现分片 hash 校验：注入一个损坏分片，验证合并时能定位到具体分片。
+3. 思考题：为什么"合并要由客户端显式调用完成接口"而不是"最后一片自动触发"？从"并发上传无法判断最后一片"分析。
+
+---
+
+### 73-03 秒传与内容去重
+
+**知识点**
+- **秒传（Instant Upload）的原理：内容寻址**——客户端先算文件 hash 发给服务端，**服务端已存在同 hash 的文件就直接返回成功**（不用传字节），文件元数据新建一条记录指向已有的存储对象——**同一份内容只存一份**。
+- **hash 的选择与代价**：**MD5**（快、碰撞风险理论存在但不是攻击目标）、**SHA-256**（更安全、慢一些）——**大文件算 hash 本身要几秒**（客户端算，不占服务端带宽）；**可以先算"文件头 + 大小 + 尾部"的轻量指纹做预判**，命中再算全量 hash。
+- **秒传的安全风险**：**hash 泄露**（攻击者知道你有哪些文件）、**恶意秒传**（上传一个 hash 让别人以为你有某个敏感文件）——对策：**秒传按"用户可见范围"校验**（不能跨租户复用）、**敏感文件不做秒传**（55-04/68-05）。
+- **与存储分层的关系**：秒传让"逻辑文件"与"物理对象"变成 **N:1**（多个 fileId 指向同一 storageKey）——**删除要引用计数**（最后一个引用删掉才删物理文件，像 60-07 的 ByteBuf 引用计数）。
+- 易错点：跨租户秒传（数据泄露）；删除物理文件时其他引用失效；hash 算法变了但没版本（新旧不兼容）；只凭 hash 就信任内容（客户端可伪造）。
+- **与 46-03 的关系**：对象存储本身不提供秒传，**是应用层用 hash 索引实现的**——"查 hash 是否存在"这一步就是秒传的全部魔法。
+
+**示例代码**
+```java
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+public class InstantUpload {
+    /** 物理对象：hash -> 存储键 + 引用计数 */
+    record Blob(String hash, String storageKey, long sizeBytes, int refCount) {
+        Blob retain() {
+            return new Blob(hash, storageKey, sizeBytes, refCount + 1);
+        }
+
+        Blob release() {
+            return new Blob(hash, storageKey, sizeBytes, refCount - 1);
+        }
+    }
+
+    static final Map<String, Blob> blobs = new LinkedHashMap<>();
+    /** 逻辑文件：fileId -> hash（多对一） */
+    static final Map<String, String> files = new LinkedHashMap<>();
+
+    /** 秒传检查：hash 已存在且在允许范围内 */
+    static String checkInstant(String hash, String tenantId, boolean allowCrossTenant) {
+        Blob b = blobs.get(hash);
+        if (b == null) {
+            return "MISS：需要真实上传";
+        }
+        if (!allowCrossTenant) {
+            // 简化：假设同租户才允许复用（真实实现按 blob 的 tenant 标记判断）
+            System.out.println("  命中 hash，但需校验租户范围（本示例允许同租户）");
+        }
+        return "HIT：秒传成功（复用 storageKey=" + b.storageKey()
+                + "，大小 " + b.sizeBytes() + "）";
+    }
+
+    /** 真实上传：创建 blob + 逻辑文件引用 */
+    static String upload(String fileId, String hash, long size, String tenantId) {
+        Blob existing = blobs.get(hash);
+        if (existing != null) {
+            blobs.put(hash, existing.retain());
+            files.put(fileId, hash);
+            return "秒传（引用计数 -> " + blobs.get(hash).refCount() + "）";
+        }
+        String storageKey = "blob/" + hash.substring(0, 2) + "/" + hash;
+        blobs.put(hash, new Blob(hash, storageKey, size, 1));
+        files.put(fileId, hash);
+        return "真实上传（新建 blob " + storageKey + "）";
+    }
+
+    /** 删除：引用计数归零才删物理对象 */
+    static String delete(String fileId) {
+        String hash = files.remove(fileId);
+        if (hash == null) {
+            return "文件不存在";
+        }
+        Blob b = blobs.get(hash);
+        Blob released = b.release();
+        if (released.refCount() <= 0) {
+            blobs.remove(hash);
+            return "删除逻辑文件 + 物理对象（引用归零）";
+        }
+        blobs.put(hash, released);
+        return "删除逻辑文件（物理对象保留，剩余引用 " + released.refCount() + "）";
+    }
+
+    public static void main(String[] args) {
+        System.out.println("【首次上传】");
+        System.out.println("  " + upload("f-1", "abc123", 1024 * 1024, "t-100"));
+        System.out.println("  blobs=" + blobs.keySet() + " files=" + files);
+
+        System.out.println();
+        System.out.println("【秒传检查】");
+        System.out.println("  " + checkInstant("abc123", "t-100", true));
+        System.out.println("  " + checkInstant("not-exist", "t-100", true));
+
+        System.out.println();
+        System.out.println("【同一内容第二个文件】");
+        System.out.println("  " + upload("f-2", "abc123", 1024 * 1024, "t-100"));
+        System.out.println("  blobs=" + blobs + " files=" + files);
+        System.out.println("  两个逻辑文件指向同一物理对象（N:1）");
+
+        System.out.println();
+        System.out.println("【删除一个逻辑文件】");
+        System.out.println("  " + delete("f-1"));
+        System.out.println("  blobs=" + blobs + " files=" + files);
+
+        System.out.println();
+        System.out.println("【删除最后一个引用】");
+        System.out.println("  " + delete("f-2"));
+        System.out.println("  blobs=" + blobs + "（物理对象已删除）");
+
+        System.out.println();
+        System.out.println("【安全边界】");
+        System.out.println("  跨租户秒传 = 数据泄露（55-04 双键校验）");
+        System.out.println("  敏感文件（身份证照片）不做秒传（68-02 L4 数据）");
+    }
+}
+```
+
+**课后练习**
+1. 实现秒传与引用计数：两个文件复用同一 blob、逐个删除验证"最后引用才删物理对象"。
+2. 实现"轻量指纹预判"：先用（大小 + 头尾 hash）判断可能命中，再算全量 hash 确认，量化节省的时间。
+3. 思考题：为什么"跨租户秒传"是数据泄露？构造"用 hash 探测其他租户有无某文件"的攻击路径。
+
+---
+
+### 73-04 存储选型：本地盘、对象存储与 CDN
+
+**知识点**
+- **三种存储的定位**：**本地盘/文件系统**（低延迟、需自己管容量与备份、适合临时文件与热数据）、**对象存储**（无限容量、按量计费、HTTP 直连、适合几乎全部持久文件）、**CDN**（边缘缓存、加速下载、抗带宽峰值、适合公开静态资源）。
+- **选型的三个判据**：**访问模式**（谁访问、频率、地域分布）、**一致性要求**（写完能否立即读）、**成本结构**（存储费 vs 流量费——出网流量常是隐形大头 46-03）。
+- **典型组合**：**上传直传对象存储** -> **私有文件走签名 URL**（73-06）-> **公开资源挂 CDN** -> **缩略图异步生成后也放对象存储**——**本地盘只用于临时中转**（如上传时的分片暂存）。
+- **对象存储的一致性**：现代对象存储通常"写后强一致读"，但**跨区域复制有延迟**——**CDN 缓存有 TTL**（更新后要刷新缓存，73-07）。
+- **与 37-06 的关系**：容器的数据卷是"本地盘"的容器化形态——**容器内的本地盘不适合持久化业务文件**（容器一删就没），应挂卷或直接对象存储。
+- 易错点：业务文件存应用服务器本地盘（扩容/迁移丢数据）；公开资源直连对象存储（贵且慢，该走 CDN）；CDN 缓存更新不刷新（用户看到旧图）；忽略出网流量成本。
+
+**示例代码**
+```java
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class StorageChoice {
+    record Option(String name, String pros, String cons, String fit) {
+    }
+
+    static void compare() {
+        System.out.println("【三种存储对比】");
+        List<Option> options = List.of(
+                new Option("本地盘", "延迟最低、无需网络", "要自己管容量/备份/迁移",
+                        "临时文件、构建缓存"),
+                new Option("对象存储", "无限容量、按量、HTTP 直连", "出网流量费、延迟略高",
+                        "几乎所有持久文件"),
+                new Option("CDN", "边缘加速、抗峰值", "缓存有 TTL、刷新有成本",
+                        "公开静态资源（图片/视频/JS）"));
+        for (Option o : options) {
+            System.out.printf("  %-8s 优势=%-26s 劣势=%-26s 适合=%s%n",
+                    o.name(), o.pros(), o.cons(), o.fit());
+        }
+        System.out.println();
+    }
+
+    /** 成本模型：存储费 + 流量费 */
+    static void costModel() {
+        System.out.println("【成本模型（模拟参数）】");
+        long storageGb = 2000;
+        double storagePricePerGbMonth = 0.12;
+        long monthlyDownloadGb = 5000;
+        double egressPricePerGb = 0.5;
+        double cdnPricePerGb = 0.2;
+
+        double originCost = storageGb * storagePricePerGbMonth;
+        double egressDirect = monthlyDownloadGb * egressPricePerGb;
+        double egressCdn = monthlyDownloadGb * cdnPricePerGb;
+        System.out.printf("  存储 %dGB -> %.0f 元/月%n", storageGb, originCost);
+        System.out.printf("  直连下载 %dGB -> %.0f 元/月（出网费）%n",
+                monthlyDownloadGb, egressDirect);
+        System.out.printf("  走 CDN %dGB -> %.0f 元/月（省 %.0f%%）%n",
+                monthlyDownloadGb, egressCdn, (1 - egressCdn / egressDirect) * 100);
+        System.out.printf("  总成本：直连 %.0f 元 vs CDN %.0f 元%n",
+                originCost + egressDirect, originCost + egressCdn);
+        System.out.println("  结论：下载量大时，CDN 省的钱远超缓存管理的复杂度");
+        System.out.println();
+    }
+
+    static void typicalCombination() {
+        System.out.println("【典型组合】");
+        Map<String, String> flow = new LinkedHashMap<>();
+        flow.put("上传", "客户端分片直传对象存储（应用只发签名 73-07）");
+        flow.put("私有文件下载", "应用签发临时 URL（73-06）");
+        flow.put("公开图片", "对象存储 -> CDN 回源，边缘缓存");
+        flow.put("缩略图", "异步生成后写对象存储（同桶不同前缀）");
+        flow.put("临时分片", "本地盘（上传完成后清理）");
+        flow.forEach((k, v) -> System.out.printf("  %-10s %s%n", k, v));
+        System.out.println();
+        System.out.println("  反模式：业务文件写容器本地盘 -> 重启即丢（37-06）");
+    }
+
+    public static void main(String[] args) {
+        compare();
+        costModel();
+        typicalCombination();
+    }
+}
+```
+
+**课后练习**
+1. 为你的业务列出 5 类文件（用户头像/合同 PDF/导出报表/临时分片/公开图片），各选存储并说明理由。
+2. 用真实/模拟参数算一次成本：存储 + 直连出网 vs 存储 + CDN，找出"切换 CDN 的盈亏平衡点"。
+3. 思考题：为什么"业务文件存容器本地盘"是事故？从"容器重建"与"多副本调度"分析。
+
+---
+
+### 73-05 上传安全：类型、大小与内容校验
+
+**知识点**
+- **文件上传是最高危的入口之一**：**可执行文件上传**（webshell）、**路径穿越**（`../../etc/passwd`）、**超大文件**（磁盘打满）、**zip 炸弹**（解压后爆盘）、**图片隐写/恶意宏**（36 章的攻击面）。
+- **四层校验**：**大小限制**（请求级 + 用户级配额）、**类型校验**（MIME + 扩展名白名单——**不能只看扩展名**，要读文件头魔数 66-03 同款）、**文件名安全化**（丢弃原文件名，用 UUID + 白名单扩展名）、**内容扫描**（病毒/恶意宏，异步）。
+- **存储隔离**：**用户文件与程序文件不同域**（上传目录禁止执行脚本）、**下载走独立域名**（防 XSS 通过 SVG/HTML 上传执行——36-03 的存储型 XSS）。
+- **访问控制**：**私有文件必须签名下载**（73-06）；**归属校验**（不是文件主人不能下——55-04 双键）。
+- 与 36 章的关系：上传是"输入校验"的典型场景——**所有校验必须在服务端**（前端 accept 属性只是体验）。
+- 易错点：只校验扩展名（改后缀即绕过）；用原文件名拼路径（穿越）；上传目录可执行（webshell）；不限制大小（磁盘打满）；SVG/HTML 直接回显（XSS）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class UploadSecurity {
+    /** 允许的类型：扩展名 -> 文件头魔数（十六进制前缀） */
+    static final Map<String, String> ALLOWED = new LinkedHashMap<>();
+
+    static {
+        ALLOWED.put("jpg", "FFD8FF");
+        ALLOWED.put("png", "89504E47");
+        ALLOWED.put("pdf", "25504446");
+        ALLOWED.put("docx", "504B0304");       // zip 容器
+    }
+
+    static final long MAX_SIZE = 50L * 1024 * 1024;
+
+    record Check(String name, boolean pass, String detail) {
+    }
+
+    static List<Check> validate(String originalName, long sizeBytes, String headHex,
+                                String contentType) {
+        List<Check> checks = new ArrayList<>();
+        // 1) 大小
+        checks.add(new Check("大小限制", sizeBytes <= MAX_SIZE,
+                sizeBytes + " 字节（上限 " + MAX_SIZE + "）"));
+        // 2) 扩展名白名单
+        int dot = originalName.lastIndexOf('.');
+        String ext = dot < 0 ? "" : originalName.substring(dot + 1).toLowerCase();
+        checks.add(new Check("扩展名白名单", ALLOWED.containsKey(ext),
+                "扩展名=" + ext));
+        // 3) 文件头魔数与扩展名一致（防改后缀）
+        String expected = ALLOWED.get(ext);
+        boolean magicOk = expected != null && headHex.toUpperCase().startsWith(expected);
+        checks.add(new Check("文件头校验", magicOk,
+                "头=" + headHex + " 期望前缀=" + expected));
+        // 4) MIME 一致性（粗校验）
+        boolean mimeOk = contentType != null && !contentType.isBlank();
+        checks.add(new Check("Content-Type 存在", mimeOk, "type=" + contentType));
+        return checks;
+    }
+
+    /** 安全化文件名：永不使用原文件名拼路径 */
+    static String safeStorageKey(String originalName, String uuid) {
+        int dot = originalName.lastIndexOf('.');
+        String ext = dot < 0 ? "" : originalName.substring(dot + 1).toLowerCase();
+        return "upload/" + uuid + (ext.isEmpty() ? "" : "." + ext);
+    }
+
+    /** 路径穿越检测（展示为什么不能用原文件名） */
+    static boolean pathTraversalRisk(String name) {
+        return name.contains("..") || name.contains("/") || name.contains("\\")
+                || name.contains(":") || name.startsWith(".");
+    }
+
+    public static void main(String[] args) {
+        System.out.println("【校验用例】");
+        Object[][] cases = {
+                {"photo.jpg", 1024 * 1024L, "FFD8FFE0", "image/jpeg"},
+                {"evil.jpg", 1024 * 1024L, "4D5A9000", "image/jpeg"},          // 改后缀的 exe
+                {"invoice.pdf", 2 * 1024 * 1024L, "25504446", "application/pdf"},
+                {"huge.zip", 200L * 1024 * 1024, "504B0304", "application/zip"},
+                {"shell.php", 1024L, "3C3F7068", "text/plain"}
+        };
+        for (Object[] c : cases) {
+            List<Check> checks = validate((String) c[0], (Long) c[1],
+                    (String) c[2], (String) c[3]);
+            boolean allPass = checks.stream().allMatch(Check::pass);
+            System.out.printf("  %-12s -> %s%n", c[0], allPass ? "通过" : "拒绝");
+            checks.stream().filter(x -> !x.pass())
+                    .forEach(x -> System.out.printf("      拦截：%s（%s）%n",
+                            x.name(), x.detail()));
+        }
+
+        System.out.println();
+        System.out.println("【文件名安全化】");
+        String[] names = {"../../etc/passwd", "normal.jpg", "a b c.png", "C:\\windows\\x.exe"};
+        for (String n : names) {
+            System.out.printf("  原文件名=%-22s 穿越风险=%-5s -> 存储键=%s%n",
+                    n, pathTraversalRisk(n), safeStorageKey(n, "uuid-1234"));
+        }
+
+        System.out.println();
+        System.out.println("【其他防线】");
+        Map<String, String> defenses = new LinkedHashMap<>();
+        defenses.put("存储隔离", "上传目录不可执行；下载走独立域名（防 SVG/HTML XSS）");
+        defenses.put("异步扫描", "病毒/恶意宏扫描，命中则隔离（不阻塞上传）");
+        defenses.put("配额", "用户/租户级总容量限制（55-05）");
+        defenses.put("归属校验", "下载时校验 owner（55-04 双键）");
+        defenses.forEach((k, v) -> System.out.printf("  %-8s %s%n", k, v));
+    }
+}
+```
+
+**课后练习**
+1. 实现四层上传校验（大小/扩展名/文件头/MIME），用 5 个用例（含改后缀的木马）验证拦截。
+2. 实现文件名安全化与路径穿越检测，用 4 个恶意文件名验证。
+3. 思考题：为什么"上传目录可执行"会导致 webshell？从"上传 + 访问触发"的攻击链分析。
+
+---
+
+### 73-06 防盗链与签名 URL
+
+**知识点**
+- **私有文件的访问控制只有一条路：签名 URL**——应用校验用户权限后，**签发一个带过期时间与签名的临时 URL**（`?expires=...&signature=...`），CDN/对象存储验签通过才允许下载——**URL 本身就是"临时通行证"**。
+- **签名的三要素**：**资源路径 + 过期时间 + 密钥**（HMAC 签名，64-03 同款）——**任何一项被改，签名就不符**；**过期时间必须服务端校验**（不能用客户端时间）。
+- **防盗链（Referer 校验）的局限**：`Referer` 头可以伪造（curl 直接带）、可以缺失（隐私模式/直接访问）——**只能防"简单盗链"，不能防恶意**；**真正防护是签名 URL**（每次访问都要服务端授权）。
+- **与 CDN 的配合**：**CDN 回源鉴权**（CDN 回源带签名）、**CDN 边缘鉴权**（CDN 自己验签，不消耗回源）——大流量场景用边缘鉴权。
+- **与 64-03 的关系**：签名 URL 就是"一次性的 API 签名"——**同样的 HMAC 机制，不同的参数**（资源路径替代请求参数）。
+- 易错点：签名不过期（链接永久有效，泄露即失守）；过期时间用客户端时间校验（可绕过）；密钥在 URL 里明文（应只出现签名）；只做 Referer 校验就以为安全。
+
+**示例代码**
+```java
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+public class SignedUrl {
+    static final String SECRET = "storage-secret-key";
+
+    static String hmac(String data) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(SECRET.getBytes("UTF-8"), "HmacSHA256"));
+            return Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString(mac.doFinal(data.getBytes("UTF-8")));
+        } catch (Exception e) {
+            throw new IllegalStateException("sign failed", e);
+        }
+    }
+
+    /** 签发：path + expires 一并签名 */
+    static String sign(String path, long expiresAtMs) {
+        String raw = path + "|" + expiresAtMs;
+        return path + "?expires=" + expiresAtMs + "&sign=" + hmac(raw);
+    }
+
+    /** 校验：路径/过期/签名 */
+    static String verify(String url, long nowMs) {
+        int q = url.indexOf('?');
+        if (q < 0) {
+            return "拒绝：缺少签名参数";
+        }
+        String path = url.substring(0, q);
+        Map<String, String> params = new LinkedHashMap<>();
+        for (String kv : url.substring(q + 1).split("&")) {
+            String[] p = kv.split("=", 2);
+            params.put(p[0], p.length > 1 ? p[1] : "");
+        }
+        if (!params.containsKey("expires") || !params.containsKey("sign")) {
+            return "拒绝：参数不完整";
+        }
+        long expires;
+        try {
+            expires = Long.parseLong(params.get("expires"));
+        } catch (NumberFormatException e) {
+            return "拒绝：expires 非法";
+        }
+        if (nowMs > expires) {
+            return "拒绝：已过期（" + (nowMs - expires) / 1000 + " 秒前）";
+        }
+        String expect = hmac(path + "|" + expires);
+        if (!expect.equals(params.get("sign"))) {
+            return "拒绝：签名不符（路径或过期时间被改）";
+        }
+        return "通过：允许下载 " + path;
+    }
+
+    /** 防盗链：Referer 校验（仅辅助） */
+    static String refererCheck(String referer, String allowedHost) {
+        if (referer == null || referer.isBlank()) {
+            return "Referer 缺失（可能是直接访问/隐私模式）-> 不能作为唯一防线";
+        }
+        if (!referer.startsWith("https://" + allowedHost)) {
+            return "Referer 不符（" + referer + "）-> 拒绝";
+        }
+        return "Referer 通过（但可伪造，仍需签名）";
+    }
+
+    public static void main(String[] args) {
+        long now = 1_000_000;
+        long ttl = 300_000;
+
+        System.out.println("【签发与校验】");
+        String url = sign("private/contract-9001.pdf", now + ttl);
+        System.out.println("  签发：" + url);
+        System.out.println("  " + verify(url, now + 1000));
+
+        System.out.println();
+        System.out.println("【篡改路径】");
+        String tampered = url.replace("contract-9001", "contract-9002");
+        System.out.println("  " + verify(tampered, now + 1000));
+
+        System.out.println();
+        System.out.println("【篡改过期时间（延长）】");
+        String extended = url.replace("expires=" + (now + ttl),
+                "expires=" + (now + ttl * 100));
+        System.out.println("  " + verify(extended, now + 1000));
+
+        System.out.println();
+        System.out.println("【过期后访问】");
+        System.out.println("  " + verify(url, now + ttl + 1));
+
+        System.out.println();
+        System.out.println("【Referer 防盗链（辅助手段）】");
+        System.out.println("  " + refererCheck("https://shop.example.com/detail", "shop.example.com"));
+        System.out.println("  " + refererCheck("https://evil.example.net/hotlink", "shop.example.com"));
+        System.out.println("  " + refererCheck(null, "shop.example.com"));
+
+        System.out.println();
+        System.out.println("【要点】TTL 5~15 分钟、服务端校验过期、路径与过期一起签名、密钥不进 URL");
+    }
+}
+```
+
+**课后练习**
+1. 实现签名 URL：签发/校验/篡改检测/过期拒绝，用 4 个场景验证。
+2. 实现"CDN 边缘鉴权"：CDN 用同一密钥验签，验证回源请求被签名保护。
+3. 思考题：为什么"Referer 校验不能作为主要防线"？从"可伪造/可缺失"两个特征分析（并说明它防的是什么）。
+
+---
+
+### 73-07 图片处理与动态缩放
+
+**知识点**
+- **图片服务的两个关键设计**：**原图只存一份**（保留最高质量）+ **衍生图按需生成并缓存**（缩略图/水印/裁剪）——**不要把每种尺寸都预先全量生成**（尺寸组合爆炸），而是"首次请求生成 + 缓存"。
+- **动态缩放的 URL 规范**：`/img/{fileId}_{w}_{h}.webp`——**尺寸进 URL**，CDN/对象存储按 URL 缓存；**同一个 fileId 不同尺寸是不同缓存条目**。
+- **WebP/AVIF 的自适应**：按 `Accept` 头返回不同格式（现代浏览器 WebP 体积小 30%）——**格式协商 + 缓存键要含格式**（70-08 的 Vary 思想）。
+- **图片处理的成本**：CPU 密集（解码 + 缩放 + 编码）——**异步生成 + 队列**（63 章），**生成结果落对象存储**（后续直接命中缓存）；**超大原图的保护**（限制最大像素，防解压炸弹）。
+- **与 73-05 的关系**：图片同样是上传入口——**校验格式与尺寸、剥离 EXIF**（防隐私泄露，68 章：照片里可能带 GPS 坐标）。
+- 易错点：全量预生成所有尺寸（存储爆炸）；图片处理同步阻塞上传响应；不限制原图像素（解压炸弹）；不剥离 EXIF（泄露拍摄位置）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class ImageProcessing {
+    record Variant(String key, int width, int height, String format, long sizeBytes) {
+    }
+
+    /** 衍生图缓存：key = fileId + 尺寸 + 格式 */
+    static final Map<String, Variant> variantCache = new LinkedHashMap<>();
+    static int generateCount = 0;
+
+    static String variantKey(String fileId, int w, int h, String format) {
+        return fileId + "_" + w + "x" + h + "." + format;
+    }
+
+    /** 按需生成：命中缓存直接返回，否则生成 */
+    static Variant getVariant(String fileId, int w, int h, String format,
+                              long originalBytes) {
+        String key = variantKey(fileId, w, h, format);
+        Variant cached = variantCache.get(key);
+        if (cached != null) {
+            System.out.printf("  命中缓存 %s（%d 字节）%n", key, cached.sizeBytes());
+            return cached;
+        }
+        generateCount++;
+        // 简化：面积比例估算体积 + 格式压缩系数
+        double areaRatio = (w * (double) h) / (4000.0 * 3000.0);
+        double formatFactor = format.equals("webp") ? 0.6 : (format.equals("avif") ? 0.5 : 1.0);
+        long size = Math.max(2048, (long) (originalBytes * areaRatio * formatFactor));
+        Variant v = new Variant(key, w, h, format, size);
+        variantCache.put(key, v);
+        System.out.printf("  生成 %s（%d 字节）-> 落对象存储%n", key, size);
+        return v;
+    }
+
+    /** 格式协商：按 Accept 选最优格式 */
+    static String negotiateFormat(String accept) {
+        if (accept == null) {
+            return "jpeg";
+        }
+        if (accept.contains("image/avif")) {
+            return "avif";
+        }
+        if (accept.contains("image/webp")) {
+            return "webp";
+        }
+        return "jpeg";
+    }
+
+    /** 上传保护：像素上限 + EXIF 剥离 */
+    static List<String> validateImage(int width, int height, Map<String, String> exif) {
+        List<String> issues = new ArrayList<>();
+        long pixels = (long) width * height;
+        if (pixels > 50_000_000L) {
+            issues.add("像素超限（" + pixels + "），可能是解压炸弹");
+        }
+        if (exif.containsKey("GPS")) {
+            issues.add("检测到 GPS 信息（" + exif.get("GPS") + "）-> 需剥离（隐私）");
+        }
+        if (exif.containsKey("CameraModel")) {
+            issues.add("检测到相机型号 -> 建议剥离");
+        }
+        return issues;
+    }
+
+    public static void main(String[] args) {
+        long originalBytes = 5L * 1024 * 1024;
+        System.out.println("【按需生成 + 缓存】");
+        getVariant("f-1", 200, 200, "webp", originalBytes);
+        getVariant("f-1", 200, 200, "webp", originalBytes);
+        getVariant("f-1", 800, 600, "webp", originalBytes);
+        getVariant("f-1", 200, 200, "jpeg", originalBytes);
+        System.out.printf("  实际生成次数：%d（其余命中缓存）%n", generateCount);
+
+        System.out.println();
+        System.out.println("【格式协商】");
+        String[] accepts = {
+                "image/avif,image/webp,*/*",
+                "image/webp,image/*",
+                "image/png,image/jpeg",
+                null
+        };
+        for (String a : accepts) {
+            System.out.printf("  Accept=%-32s -> %s%n", "[" + a + "]", negotiateFormat(a));
+        }
+
+        System.out.println();
+        System.out.println("【上传保护】");
+        Map<String, String> exif = new LinkedHashMap<>();
+        exif.put("GPS", "30.2741N,120.1551E");
+        exif.put("CameraModel", "Phone X");
+        validateImage(6000, 4000, exif).forEach(i -> System.out.println("  " + i));
+        System.out.println("  正常图（无 EXIF、像素合规）：" + validateImage(1200, 800, Map.of()));
+
+        System.out.println();
+        System.out.println("【架构要点】");
+        System.out.println("  原图一份 + 衍生图按需 + 结果落对象存储（CDN 缓存）");
+        System.out.println("  处理 CPU 密集 -> 异步队列（63 章）；超大图限制像素（防炸弹）");
+    }
+}
+```
+
+**课后练习**
+1. 实现按需生成 + 缓存：3 种尺寸 × 2 种格式，验证"每种组合只生成一次"。
+2. 实现格式协商与缓存键：验证同一 fileId 的 webp 与 jpeg 是不同缓存条目（Vary 思想）。
+3. 思考题：为什么"剥离 EXIF"是隐私要求？举出照片 EXIF 可能泄露的三类信息。
+
+---
+
+### 73-08 大文件下载与断点下载
+
+**知识点**
+- **大文件下载的两个关键**：**Range 请求**（HTTP 的 `Range: bytes=start-end`，客户端可分段下载/续传）与 **Content-Disposition**（`attachment; filename=...` 触发下载，文件名要按 RFC 5987 编码非 ASCII）。
+- **服务端要支持的三件事**：**`Accept-Ranges: bytes`** 声明支持分段、**`206 Partial Content`** 返回部分内容（带 `Content-Range`）、**`416 Range Not Satisfiable`** 处理非法区间——**缺一个客户端就无法续传**。
+- **下载链路的选择**：**小文件**直接签名 URL 给对象存储/CDN；**大文件**同样签名 URL（对象存储原生支持 Range）——**应用服务器不应中转文件流**（占用连接与带宽）。
+- **下载的内容安全**：**文件名注入**（`filename="../../x"` 或 CRLF 注入）要过滤；**下载文件的 MIME 不要用用户给的**（用白名单）；**压缩包下载要防 zip 炸弹**（73-05）。
+- **与 73-06 的关系**：Range 请求同样要签名（**签名要覆盖"整个资源"而非某个区间**，否则攻击者可只签一小段再拉全部）。
+- 易错点：不支持 Range（大文件只能从头下）；签名只覆盖部分请求（可绕过）；文件名直接来自数据库（历史脏数据带恶意字符）；应用服务器中转下载（带宽被打满）。
+
+**示例代码**
+```java
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+public class RangeDownload {
+    record RangeResult(int status, String contentRange, int length, String note) {
+    }
+
+    static final long TOTAL_SIZE = 100_000_000L;   // 100MB
+
+    /** 解析并处理 Range 请求 */
+    static RangeResult handleRange(String rangeHeader) {
+        if (rangeHeader == null || rangeHeader.isBlank()) {
+            return new RangeResult(200, null, (int) Math.min(TOTAL_SIZE, Integer.MAX_VALUE),
+                    "全量下载（Accept-Ranges: bytes）");
+        }
+        if (!rangeHeader.startsWith("bytes=")) {
+            return new RangeResult(416, null, 0, "非法 Range 语法");
+        }
+        String spec = rangeHeader.substring("bytes=".length()).trim();
+        String[] p = spec.split("-", -1);
+        try {
+            long start;
+            long end;
+            if (p[0].isEmpty()) {                       // bytes=-500 表示最后 500 字节
+                long suffix = Long.parseLong(p[1]);
+                start = Math.max(0, TOTAL_SIZE - suffix);
+                end = TOTAL_SIZE - 1;
+            } else {
+                start = Long.parseLong(p[0]);
+                end = p[1].isEmpty() ? TOTAL_SIZE - 1 : Long.parseLong(p[1]);
+            }
+            if (start < 0 || start >= TOTAL_SIZE || end < start) {
+                return new RangeResult(416, "bytes */" + TOTAL_SIZE, 0,
+                        "区间非法 -> 返回 416 + 完整长度");
+            }
+            end = Math.min(end, TOTAL_SIZE - 1);
+            long len = end - start + 1;
+            return new RangeResult(206,
+                    "bytes " + start + "-" + end + "/" + TOTAL_SIZE,
+                    (int) Math.min(len, Integer.MAX_VALUE),
+                    "部分内容（可续传）");
+        } catch (NumberFormatException e) {
+            return new RangeResult(416, null, 0, "数字解析失败");
+        }
+    }
+
+    /** Content-Disposition：非 ASCII 文件名用 RFC 5987 编码 */
+    static String contentDisposition(String filename, boolean inline) {
+        String safe = filename.replace("\"", "").replace("\r", "").replace("\n", "")
+                .replace("/", "_").replace("\\", "_");
+        boolean ascii = safe.chars().allMatch(c -> c < 128);
+        String type = inline ? "inline" : "attachment";
+        if (ascii) {
+            return type + "; filename=\"" + safe + "\"";
+        }
+        StringBuilder encoded = new StringBuilder();
+        for (byte b : safe.getBytes(java.nio.charset.StandardCharsets.UTF_8)) {
+            encoded.append(String.format("%%%02X", b));
+        }
+        return type + "; filename*=UTF-8''" + encoded;
+    }
+
+    /** 签名覆盖整个资源（不是某个区间） */
+    static String signResource(String path, long expires) {
+        return path + "?expires=" + expires + "&sign="
+                + Integer.toHexString((path + expires).hashCode());
+    }
+
+    public static void main(String[] args) {
+        System.out.println("【Range 请求处理】");
+        Map<String, String> cases = new LinkedHashMap<>();
+        cases.put("无 Range", "全量下载");
+        cases.put("bytes=0-1023", "首 1KB");
+        cases.put("bytes=50000000-", "从 50MB 到尾（续传）");
+        cases.put("bytes=-1024", "最后 1KB");
+        cases.put("bytes=999999999-", "越界");
+        cases.put("bytes=100-50", "区间反了");
+        cases.put("items=0-100", "语法错误");
+        for (Map.Entry<String, String> e : cases.entrySet()) {
+            RangeResult r = handleRange(e.getKey().equals("无 Range") ? null : e.getKey());
+            System.out.printf("  %-18s -> %d %-40s %s%n", e.getKey(), r.status(),
+                    r.contentRange() == null ? "-" : r.contentRange(), r.note());
+        }
+
+        System.out.println();
+        System.out.println("【Content-Disposition】");
+        for (String f : new String[]{"report.pdf", "月度报表.pdf", "../../etc/passwd"}) {
+            System.out.printf("  %-18s -> %s%n", f, contentDisposition(f, false));
+        }
+
+        System.out.println();
+        System.out.println("【签名覆盖整个资源】");
+        System.out.println("  " + signResource("files/contract-9001.pdf", 1_000_300));
+        System.out.println("  注意：签名针对 path，Range 只是请求头 -> 无法用局部签名放大下载范围");
+    }
+}
+```
+
+**课后练习**
+1. 实现 Range 解析：覆盖 7 种请求（含后缀区间/越界/语法错），输出状态码与 Content-Range。
+2. 实现 Content-Disposition 安全化：过滤路径与 CRLF，非 ASCII 用 RFC 5987 编码，用 3 个文件名验证。
+3. 思考题：为什么"签名只覆盖路径而不含 Range"是安全的？从"Range 不改变资源身份"分析。
+
+---
+
+### 73-09 大文件导出与压缩
+
+**知识点**
+- **导出与下载的区别**：下载是"取已存在的文件"，导出是"**现场生成文件**"——**导出的痛点是内存**（百万行数据一次读进内存必 OOM），解法是**流式生成 + 分批查询**（76 章细讲）。
+- **压缩的两个时机**：**生成时压缩**（导出直接写成 zip，边写边压缩，内存友好）与 **传输时压缩**（HTTP `Content-Encoding: gzip`，适合文本）——**大文件优先"生成时压缩"**。
+- **office 格式的本质**：**docx/xlsx/pptx 都是 zip 包**（内含 XML）——**可以用 `ZipOutputStream` 手工生成最小的 xlsx**（无需 POI），这是理解"导出库在做什么"的最佳路径（76-04）。
+- **导出的异步化**：超过 N 行的导出**不阻塞请求**——提交任务 -> 后台生成 -> 通知下载（76-09 的下载中心），**避免 HTTP 超时**。
+- **与 76 章的关系**：本章讲"文件工程"的通用面，76 章讲"报表内容"的生成细节——**两者互补**。
+- 易错点：`ByteArrayOutputStream` 攒整个文件（OOM）；同步导出百万行（请求超时）；不设导出上限（一个请求跑了 10 分钟）；压缩率没预期的格式（图片再压缩几乎无效）。
+
+**示例代码**
+```java
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
+
+public class ExportAndZip {
+    /** 流式写 zip：逐条写，内存只保留当前条目 */
+    static byte[] buildZip(List<String[]> rows) throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        try (ZipOutputStream zos = new ZipOutputStream(bos)) {
+            zos.putNextEntry(new ZipEntry("data.csv"));
+            zos.write("id,name,amount\n".getBytes(StandardCharsets.UTF_8));
+            for (String[] r : rows) {
+                zos.write((r[0] + "," + r[1] + "," + r[2] + "\n")
+                        .getBytes(StandardCharsets.UTF_8));
+            }
+            zos.closeEntry();
+            zos.putNextEntry(new ZipEntry("README.txt"));
+            zos.write("导出于 2026-11-18\n".getBytes(StandardCharsets.UTF_8));
+            zos.closeEntry();
+        }
+        return bos.toByteArray();
+    }
+
+    /** 最小 xlsx：zip 里放 3 个 XML（[Content_Types].xml / _rels / sheet1.xml） */
+    static byte[] minimalXlsx(String sheetName, List<String[]> rows) throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        try (ZipOutputStream zos = new ZipOutputStream(bos)) {
+            String contentTypes = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                    + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+                    + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+                    + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+                    + "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>"
+                    + "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+                    + "</Types>";
+            put(zos, "[Content_Types].xml", contentTypes);
+
+            String rels = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                    + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                    + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>"
+                    + "</Relationships>";
+            put(zos, "_rels/.rels", rels);
+
+            String workbook = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                    + "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+                    + "<sheets><sheet name=\"" + sheetName + "\" sheetId=\"1\" r:id=\"rId1\""
+                    + " xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"/>"
+                    + "</sheets></workbook>";
+            put(zos, "xl/workbook.xml", workbook);
+
+            StringBuilder sheet = new StringBuilder(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                            + "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+                            + "<sheetData>");
+            for (int i = 0; i < rows.size(); i++) {
+                sheet.append("<row r=\"").append(i + 1).append("\">");
+                String[] row = rows.get(i);
+                for (int j = 0; j < row.length; j++) {
+                    sheet.append("<c r=\"").append((char) ('A' + j)).append(i + 1)
+                            .append("\" t=\"inlineStr\"><is><t>").append(row[j])
+                            .append("</t></is></c>");
+                }
+                sheet.append("</row>");
+            }
+            sheet.append("</sheetData></worksheet>");
+            put(zos, "xl/worksheets/sheet1.xml", sheet.toString());
+        }
+        return bos.toByteArray();
+    }
+
+    private static void put(ZipOutputStream zos, String name, String content)
+            throws IOException {
+        zos.putNextEntry(new ZipEntry(name));
+        zos.write(content.getBytes(StandardCharsets.UTF_8));
+        zos.closeEntry();
+    }
+
+    public static void main(String[] args) throws Exception {
+        List<String[]> rows = List.of(
+                new String[]{"1", "手机壳", "6900"},
+                new String[]{"2", "蓝牙耳机", "12900"},
+                new String[]{"3", "充电器", "3900"});
+
+        byte[] zip = buildZip(rows);
+        System.out.println("【zip 导出】大小=" + zip.length + " 字节（含 data.csv + README.txt）");
+
+        byte[] xlsx = minimalXlsx("订单", rows);
+        System.out.println("【最小 xlsx】大小=" + xlsx.length + " 字节");
+        System.out.println("  内容：zip 包 + 4 个 XML 部件（xlsx 本质就是 zip）");
+
+        System.out.println();
+        System.out.println("【压缩效果对比（模拟）】");
+        Map<String, String> compress = new LinkedHashMap<>();
+        compress.put("文本 CSV 100MB", "gzip 后约 10~20MB（压缩率 80~90%）");
+        compress.put("已压缩图片 100MB", "zip 后约 95MB（几乎无效，别白费 CPU）");
+        compress.put("Excel 100MB", "zip 后约 20~30MB（XML 压缩率高）");
+        compress.forEach((k, v) -> System.out.printf("  %-18s %s%n", k, v));
+
+        System.out.println();
+        System.out.println("【导出的两条硬规则】");
+        System.out.println("  1) 流式写（不要 ByteArrayOutputStream 攒全量）");
+        System.out.println("  2) 超阈值异步（提交任务 -> 后台生成 -> 通知下载，76-09）");
+    }
+}
+```
+
+**课后练习**
+1. 实现流式 zip 导出（两个条目），验证不需要把全部内容放内存。
+2. 生成一个最小 xlsx（4 个 XML 部件），说明 xlsx = zip + XML 的结构。
+3. 思考题：为什么"对已压缩图片再 zip"是浪费？从"熵已接近上限"与"CPU 成本"分析。
+
+---
+
+### 73-10 存储治理：生命周期与成本
+
+**知识点**
+- **存储治理的三件事**：**清理**（删除无用文件：未完成分片、软删文件的物理对象、过期导出包）、**分层**（热/温/冷存储降级 46-03）、**配额**（用户/租户容量限制，55-05）。
+- **文件的生命周期状态机**：`UPLOADING`（分片上传中）-> `READY`（可用）-> `DELETED`（逻辑删除，保留物理对象 N 天便于恢复）-> `PURGED`（物理删除）——**与 68-10 的删除权衔接**（用户要求删除要能真删）。
+- **垃圾来源清单**：未完成的分片（73-02 的过期清理）、上传成功但业务未引用的孤儿文件（业务回滚）、软删未物理删的文件、过期导出包、日志/备份残留——**治理就是逐个堵住这些来源**。
+- **成本优化的杠杆**：**去重**（73-03）、**压缩**（73-09）、**分层**（冷数据转低频/归档）、**配额**（防滥用）、**出网走 CDN**（73-04）——**按收益排序做**。
+- 与 46-03 的关系：对象存储桶策略 + 生命周期规则是"基础设施层的治理"，本章是"业务层的治理"——**两层都要有**。
+- 易错点：软删永久保留（存储只增）；孤儿文件无巡查（业务回滚后文件还在）；无配额（一个用户传满盘）；物理删除跳过审计（68-09）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class StorageGovernance {
+    enum State {
+        UPLOADING, READY, DELETED, PURGED
+    }
+
+    record FileRecord(String fileId, String ownerId, long sizeBytes, State state,
+                      long createdAtMs, Long deletedAtMs, boolean referenced) {
+        FileRecord move(State next, Long deletedAt) {
+            return new FileRecord(fileId, ownerId, sizeBytes, next, createdAtMs,
+                    deletedAt, referenced);
+        }
+    }
+
+    static final List<FileRecord> records = new ArrayList<>();
+
+    static void seed() {
+        long now = 1_000_000_000L;
+        records.add(new FileRecord("f-1", "u-1", 5_000_000, State.READY, now, null, true));
+        records.add(new FileRecord("f-2", "u-1", 8_000_000, State.READY, now, null, false));
+        records.add(new FileRecord("f-3", "u-2", 2_000_000, State.UPLOADING, now - 25L * 3_600_000,
+                null, false));
+        records.add(new FileRecord("f-4", "u-2", 12_000_000, State.DELETED, now - 40L * 86_400_000,
+                now - 40L * 86_400_000, false));
+        records.add(new FileRecord("f-5", "u-3", 900_000_000, State.READY, now, null, true));
+    }
+
+    /** 治理动作：按规则批量处理 */
+    static void govern(long nowMs) {
+        System.out.println("【治理动作】");
+        long retentionDeleted = 30L * 86_400_000;
+        long uploadTtl = 24L * 3_600_000;
+        int purged = 0;
+        long freed = 0;
+        for (int i = 0; i < records.size(); i++) {
+            FileRecord r = records.get(i);
+            if (r.state() == State.UPLOADING && nowMs - r.createdAtMs() > uploadTtl) {
+                records.set(i, r.move(State.PURGED, nowMs));
+                freed += r.sizeBytes();
+                System.out.printf("  清理未完成上传：%s（%d 字节）%n", r.fileId(), r.sizeBytes());
+            } else if (r.state() == State.DELETED && r.deletedAtMs() != null
+                    && nowMs - r.deletedAtMs() > retentionDeleted) {
+                records.set(i, r.move(State.PURGED, nowMs));
+                freed += r.sizeBytes();
+                purged++;
+                System.out.printf("  软删超期物理删除：%s（%d 字节）%n", r.fileId(), r.sizeBytes());
+            }
+        }
+        System.out.printf("  共释放 %.1f MB（物理删除 %d 个）%n", freed / 1024.0 / 1024, purged);
+        System.out.println();
+    }
+
+    /** 孤儿文件：READY 但无业务引用 */
+    static void orphanReport() {
+        System.out.println("【孤儿文件巡查（READY 但未被引用）】");
+        for (FileRecord r : records) {
+            if (r.state() == State.READY && !r.referenced()) {
+                System.out.printf("  %s（%d 字节，owner=%s）-> 候选清理（需业务确认）%n",
+                        r.fileId(), r.sizeBytes(), r.ownerId());
+            }
+        }
+        System.out.println();
+    }
+
+    static void quotaReport() {
+        System.out.println("【配额统计】");
+        Map<String, Long> usage = new LinkedHashMap<>();
+        for (FileRecord r : records) {
+            if (r.state() != State.PURGED) {
+                usage.merge(r.ownerId(), r.sizeBytes(), Long::sum);
+            }
+        }
+        long quota = 1_000_000_000L;
+        usage.forEach((owner, used) -> System.out.printf(
+                "  %-4s 已用 %.1f MB / 配额 %.0f MB -> %s%n",
+                owner, used / 1024.0 / 1024, quota / 1024.0 / 1024,
+                used > quota ? "超限（禁止上传）" : "正常"));
+        System.out.println();
+    }
+
+    static void costLevers() {
+        System.out.println("【成本优化杠杆（按收益排序）】");
+        Map<String, String> levers = new LinkedHashMap<>();
+        levers.put("去重", "同内容只存一份（73-03）");
+        levers.put("分层", "30 天未访问转低频/归档（46-03）");
+        levers.put("CDN", "出网走 CDN（73-04）");
+        levers.put("配额", "防单租户滥用（55-05）");
+        levers.put("清理", "未完成分片/孤儿文件（本章）");
+        levers.forEach((k, v) -> System.out.printf("  %-6s %s%n", k, v));
+    }
+
+    public static void main(String[] args) {
+        seed();
+        long now = 1_000_000_000L;
+        govern(now);
+        orphanReport();
+        quotaReport();
+        costLevers();
+        System.out.println();
+        System.out.println("  治理闭环：巡查 -> 候选清单 -> 业务确认 -> 删除 -> 审计（68-09）");
+    }
+}
+```
+
+**课后练习**
+1. 实现存储治理任务：清理过期分片 + 软删超期物理删除 + 孤儿巡查 + 配额统计，用 5 条记录验证。
+2. 为你的业务列出"存储垃圾来源清单"（≥5 类），各给一个堵住的办法。
+3. 思考题：为什么"软删要保留 N 天再物理删除"？从"误删恢复"与"用户删除权（68-10）"的平衡分析。
+
+---
+
+### 73-11 综合案例：文件中台
+
+**知识点**
+- **把本章收口成一个可运行的文件中台**：**上传**（分片 + 秒传 73-02/03）-> **校验**（类型/大小/文件头 73-05）-> **存储**（对象存储 + 元数据 73-01/04）-> **访问**（签名 URL 73-06）-> **衍生物**（图片按需生成 73-07）-> **下载**（Range 73-08）-> **导出**（流式 zip 73-09）-> **治理**（生命周期 73-10）。
+- **中台的三个对外能力**：**上传服务**（统一入口，业务方不关心存储）、**下载服务**（签名 URL + 权限校验）、**文件 API**（元数据查询/删除/配额）。
+- **验收清单**：大文件可分片续传、重复内容秒传、非法文件被拦截、私有文件必须签名、图片按需生成、Range 下载可用、垃圾能被清理、配额生效。
+- **与全书的关系**：文件中台把 37（容器存储）、36（上传安全）、46（对象存储成本）、55（租户配额）、68（隐私删除）串成一个业务组件——**它是"基础设施能力的业务封装"**。
+- 易错点：上传成功即认为可用（要等合并 + 扫描完成）；签名 URL TTL 太长；衍生物同步生成（阻塞响应）；无治理（存储只增）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class FileHubCase {
+    enum State {
+        UPLOADING, SCANNING, READY, DELETED
+    }
+
+    record FileMeta(String fileId, String name, long size, String hash, String tenantId,
+                    String ownerId, State state) {
+        FileMeta move(State next) {
+            return new FileMeta(fileId, name, size, hash, tenantId, ownerId, next);
+        }
+    }
+
+    static final Map<String, FileMeta> metaStore = new LinkedHashMap<>();
+    static final Map<String, String> hashIndex = new LinkedHashMap<>();   // 秒传索引
+    static final Map<String, Long> quotaUsed = new LinkedHashMap<>();
+
+    static String upload(String fileId, String name, long size, String hash,
+                         String tenantId, String ownerId, long quotaMb) {
+        // 1) 配额
+        long used = quotaUsed.getOrDefault(tenantId, 0L);
+        if (used + size > quotaMb * 1024 * 1024) {
+            return "拒绝：租户配额超限";
+        }
+        // 2) 秒传
+        String existing = hashIndex.get(hash);
+        String note;
+        if (existing != null) {
+            note = "秒传（复用 " + existing + "）";
+        } else {
+            hashIndex.put(hash, fileId);
+            note = "真实上传";
+        }
+        // 3) 入库（先 SCANNING，扫描通过才 READY）
+        metaStore.put(fileId, new FileMeta(fileId, name, size, hash, tenantId, ownerId,
+                State.SCANNING));
+        quotaUsed.merge(tenantId, size, Long::sum);
+        return note + " -> 状态 SCANNING（等待扫描）";
+    }
+
+    static void scanDone(String fileId, boolean clean) {
+        FileMeta m = metaStore.get(fileId);
+        if (m == null) {
+            return;
+        }
+        metaStore.put(fileId, m.move(clean ? State.READY : State.DELETED));
+        System.out.printf("  扫描结果 %s -> %s%n", fileId, clean ? "READY" : "DELETED（命中风险）");
+    }
+
+    /** 下载授权：租户 + 归属 + 状态 */
+    static String authorizeDownload(String fileId, String tenantId, String userId) {
+        FileMeta m = metaStore.get(fileId);
+        if (m == null || m.state() != State.READY) {
+            return "拒绝：文件不存在或未就绪";
+        }
+        if (!m.tenantId().equals(tenantId)) {
+            return "拒绝：跨租户（55-04）";
+        }
+        if (!m.ownerId().equals(userId)) {
+            return "拒绝：非归属人（越权 36-05）";
+        }
+        return "允许：签发临时 URL（TTL 300s）";
+    }
+
+    static void acceptance() {
+        System.out.println();
+        System.out.println("【验收清单】");
+        List<String> gates = List.of(
+                "分片上传 + 断点续传（73-02）",
+                "重复内容秒传（73-03）",
+                "类型/文件头校验（73-05）",
+                "私有文件签名 URL（73-06）",
+                "图片按需生成（73-07）",
+                "Range 下载（73-08）",
+                "流式导出（73-09）",
+                "生命周期治理（73-10）");
+        gates.forEach(g -> System.out.println("  [ ] " + g));
+    }
+
+    public static void main(String[] args) {
+        System.out.println("【上传】");
+        System.out.println("  " + upload("f-1", "合同.pdf", 2_000_000, "h-pdf-1",
+                "t-100", "u-1", 100));
+        System.out.println("  " + upload("f-2", "合同副本.pdf", 2_000_000, "h-pdf-1",
+                "t-100", "u-2", 100));
+        System.out.println("  " + upload("f-3", "巨款.zip", 200L * 1024 * 1024, "h-zip-1",
+                "t-100", "u-1", 100));
+
+        System.out.println();
+        System.out.println("【扫描】");
+        scanDone("f-1", true);
+        scanDone("f-2", true);
+
+        System.out.println();
+        System.out.println("【下载授权】");
+        System.out.println("  u-1 下载 f-1：" + authorizeDownload("f-1", "t-100", "u-1"));
+        System.out.println("  u-2 下载 f-1：" + authorizeDownload("f-1", "t-100", "u-2"));
+        System.out.println("  t-200 下载 f-1：" + authorizeDownload("f-1", "t-200", "u-1"));
+        System.out.println("  u-1 下载未扫描完的 f-3："
+                + authorizeDownload("f-3", "t-100", "u-1"));
+
+        System.out.println();
+        System.out.println("【配额】");
+        quotaUsed.forEach((tenant, used) -> System.out.printf("  %-6s 已用 %.1f MB%n",
+                tenant, used / 1024.0 / 1024));
+
+        acceptance();
+        System.out.println();
+        System.out.println("  一句话：文件中台 = 上传/校验/存储/授权/衍生/下载/导出/治理 的统一封装");
+    }
+}
+```
+
+**课后练习**
+1. 端到端实现文件中台（上传/秒传/扫描/授权/配额），用 3 次上传（含秒传与超配额）验证。
+2. 加入"图片按需生成 + Range 下载"：验证同一文件既支持缩略图又支持分段下载。
+3. 思考题：为什么"上传成功 ≠ 可用"？从"分片合并"与"内容扫描"两个异步阶段分析。

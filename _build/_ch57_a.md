@@ -1,0 +1,729 @@
+### 57-01 从 Java 8 到 Java 21 的演进地图
+
+**知识点**
+- **Java 的发布节奏变了：每 6 个月一个功能版本，每 2 年一个 LTS**——8（2014，LTS）、11（2018，LTS）、17（2021，LTS）、21（2023，LTS）。**企业选型只跟 LTS**：8 -> 11 -> 17 -> 21 是主流升级路线，中间版本只用来"提前试用"。
+- **JDK 21 是本课程选它作基座的原因**：虚拟线程（50 章）、record 与密封类、模式匹配、Sequenced Collections 全部定稿——**这些不是语法糖，而是改变建模方式的语言能力**（record 消除样板、密封类让"穷举"可被编译器检查）。
+- **演进的主线有三条**：① **表达力**（record/sealed/模式匹配/text blocks/var）；② **并发模型**（虚拟线程、结构化并发、ScopedValue）；③ **运行时**（G1/ZGC、容器感知、JFR 增强）。**本课程前面章节分散用到的特性，本章系统收口**。
+- **预览特性（preview）不是 API 承诺**：需要 `--enable-preview` 编译，下一个版本可能改语法甚至撤回——**生产代码不要依赖预览特性**（结构化并发、字符串模板目前仍是预览）。区分标准：`java --list-modules` 与官方 API 文档的"Preview"标记。
+- **升级的真实收益**：更少样板代码（record 替代 50 行 getter）、更强类型安全（sealed + switch 穷举检查）、更高并发（虚拟线程）、更好性能（新 GC）——**收益要量化到"每个版本省了多少维护成本"**（52-02 ADR 的输入）。
+- **升级的真实成本**：依赖库兼容性（字节码增强类库最敏感）、废弃 API 清理（`SecurityManager` 在 21 被永久禁用）、GC 参数变化、团队认知——**成本要提前扫描（jdeprscan）而不是上线才发现**。
+- 易错点：在生产用预览特性（升级即编译失败）；以为"新版本一定更快"（默认 GC 变化需要回归）；升级只改 `pom.xml` 不动代码（废弃 API 隐患潜伏）；跳过 17 直接 8->21（跨度过大，问题难以分批定位）。
+
+**示例代码**
+```java
+import java.util.List;
+import java.util.Map;
+
+public class JavaEvolution {
+    record Milestone(int version, int year, boolean lts, String headline) {
+    }
+
+    static void timeline() {
+        System.out.println("【Java 版本地图（只看 LTS 做选型）】");
+        List<Milestone> ms = List.of(
+                new Milestone(8, 2014, true, "Lambda/Stream（函数式起步）"),
+                new Milestone(11, 2018, true, "var、HTTP Client、单文件运行"),
+                new Milestone(17, 2021, true, "sealed、switch 模式匹配（预览）、文本块"),
+                new Milestone(21, 2023, true, "虚拟线程、record 模式、Sequenced Collections"));
+        for (Milestone m : ms) {
+            System.out.printf("  Java %-3d %d %s  %s%n", m.version(), m.year(),
+                    m.lts() ? "LTS" : "    ", m.headline());
+        }
+        System.out.println();
+    }
+
+    static void featureMap() {
+        System.out.println("【三条演进主线与本课程对应章节】");
+        Map<String, String> lines = Map.of(
+                "表达力", "record(57-02) / sealed(57-03) / 模式匹配(57-04/05) / 文本块(57-06) / var(57-07)",
+                "并发", "虚拟线程(50 章) / 结构化并发(预览) / ScopedValue(预览)");
+        lines.forEach((k, v) -> System.out.printf("  %-4s %s%n", k, v));
+        System.out.println();
+        System.out.println("  判定：定稿特性可用生产；预览特性只做学习验证（--enable-preview）");
+    }
+
+    public static void main(String[] args) {
+        timeline();
+        featureMap();
+        System.out.println("  本机运行时：" + Runtime.version());
+    }
+}
+```
+
+**课后练习**
+1. 列出你项目当前 JDK 版本与目标版本，画出两版之间的 LTS 升级路线，标注每步的风险点。
+2. 用 `jdeprscan --release 21 <jar>` 扫描一个真实依赖，统计废弃 API 命中数并给出修复清单。
+3. 思考题：为什么"企业只跟 LTS"？从中长期支持周期、依赖生态成熟度、升级成本摊销三个角度论证。
+
+---
+
+### 57-02 record：值语义与不可变设计
+
+**知识点**
+- **record 是"不可变数据载体"的语言级支持**：`record Point(int x, int y)` 自动生成**全参构造、访问器（注意是 `x()` 不是 `getX()`）、equals/hashCode/toString**——替代 50 行样板。**它是类不是语法糖**：可以由编译器校验的"值对象"形状。
+- **紧凑构造器做校验**：`record Money(long cents) { Money { if (cents < 0) throw ...; } }`——**校验收在类型内部**（49-02 值对象不变量思想的语言级实现）。
+- **record 是浅不可变的**：字段 final 不能改，但**若字段是可变对象（数组/List），内容仍可变**——防御性拷贝是使用者的责任（`List.copyOf`）；**record 不适合做"带行为变化的实体"**（需要可变状态用普通类）。
+- **record 实现了值语义的比较**：`equals` 按字段值（不是引用）——**可以直接用作 Map 的 key 与 Set 元素**（49-02 值对象做 key 的场景）；但含数组字段时 equals 用 `Arrays.equals` 语义需自己覆盖。
+- **record 与其它特性协作**：record 实现接口（如 `Comparable`）、record 作为 sealed 的许可子类、record 嵌套 record（57-05 模式匹配解构）。
+- **适用判据**：DTO/事件/消息/坐标/金额/结果对象——**凡是"一组不可变的命名值"都用 record**；需要继承体系或可变状态则用普通类。
+- 易错点：给 record 加 getter 风格方法（`getX()` 与访问器并存造成混乱）；把可变 List 直接存进 record（外部仍能改）；record 里放耗时/带副作用逻辑（应只是数据 + 轻校验）。
+
+**示例代码**
+```java
+import java.util.List;
+import java.util.Objects;
+
+public class RecordDemo {
+    /** 值对象：金额（分）+ 币种，构造即校验 */
+    record Money(long cents, String currency) {
+        Money {
+            if (cents < 0) {
+                throw new IllegalArgumentException("金额不能为负");
+            }
+            Objects.requireNonNull(currency, "币种不能为空");
+        }
+
+        Money plus(Money other) {
+            if (!currency.equals(other.currency())) {
+                throw new IllegalArgumentException("币种不同不可相加");
+            }
+            return new Money(cents + other.cents(), currency);
+        }
+
+        String display() {
+            return String.format("%d.%02d %s", cents / 100, cents % 100, currency);
+        }
+    }
+
+    /** 防御性拷贝：List 字段用 List.copyOf 冻结 */
+    record Order(String id, List<String> items) {
+        Order {
+            items = List.copyOf(items);        // 紧凑构造器里赋值即生效
+        }
+    }
+
+    public static void main(String[] args) {
+        Money a = new Money(1999, "CNY");
+        Money b = new Money(500, "CNY");
+        System.out.println("  相加：" + a.plus(b).display());
+        try {
+            new Money(-1, "CNY");
+        } catch (IllegalArgumentException e) {
+            System.out.println("  校验拦截：" + e.getMessage());
+        }
+
+        List<String> source = new java.util.ArrayList<>(List.of("sku-1", "sku-2"));
+        Order order = new Order("o-1", source);
+        source.add("sku-3");                   // 改外部列表
+        System.out.println("  record 内是副本：" + order.items());
+        System.out.println("  equals 按值：" + new Money(100, "CNY").equals(new Money(100, "CNY")));
+    }
+}
+```
+
+**课后练习**
+1. 把项目里一个 30 行以上的 DTO（含构造/getter/equals）改写为 record，统计代码行数变化并用单测保证行为等价。
+2. 实现 `record Range(int from, int to)`：紧凑构造器校验 `from <= to`，提供 `contains(int)` 与 `intersect(Range)`。
+3. 思考题：为什么 record 的访问器是 `x()` 而不是 `getX()`？从"值对象的纯数据语义"与 JavaBean 惯例的差异分析。
+
+---
+
+### 57-03 sealed：受限继承与穷举保障
+
+**知识点**
+- **sealed 把继承"关进白名单"**：`sealed interface Shape permits Circle, Square, Triangle`——**只有 permits 列出的类能实现它**，子类必须声明 `final`（或 `sealed`/`non-sealed`）。**这解决了"继承谱系不可知"的问题**：领域模型能精确表达"就这三种形态"。
+- **穷举检查是核心价值**：sealed + switch 模式匹配时，**编译器校验所有许可子类都被覆盖**——漏一个分支直接编译错误（而非运行期漏处理）。**这是"编译期防腐"，比文档与测试更硬**。
+- **三种子类标记**：`final`（不再继承，最常见）、`sealed`（继续受限）、`non-sealed`（重新开放继承，**慎用**——一旦有人 non-sealed，穷举保障就出现缺口）。
+- **与 31 章策略模式的关系**：策略族（可扩展、外部可插拔）用接口 + 实现类；**封闭的领域枚举（支付状态/订单类型/形状）用 sealed**——判据是"谱系是否封闭"，封闭用 sealed 换穷举保障。
+- **sealed 的工程收益**：新增子类时编译器把"所有需要处理的位置"都标红（改动面自动暴露）；删除子类同样被检查——**模型演进时有安全网**（49-10 演进思想的语言级支持）。
+- **与 record 的黄金组合**：`sealed interface Event permits OrderCreated, OrderPaid, OrderCancelled` + 三个 `record`——**事件驱动建模的最强表达**（49-03 领域事件的语言级实现），switch 处理零遗漏。
+- 易错点：non-sealed 滥用（穷举保障被破坏）；同模块限制（sealed 子类通常要在同一模块/包，跨模块受限）；把可扩展插件体系做成 sealed（扩展性反而被杀）。
+
+**示例代码**
+```java
+public class SealedDemo {
+    /** 封闭事件谱系：只允许这三种事件 */
+    sealed interface DomainEvent permits OrderCreated, OrderPaid, OrderCancelled {
+        String orderId();
+    }
+
+    record OrderCreated(String orderId, long amountCents) implements DomainEvent {
+    }
+
+    record OrderPaid(String orderId, long paidAtMs) implements DomainEvent {
+    }
+
+    record OrderCancelled(String orderId, String reason) implements DomainEvent {
+    }
+
+    /** 只修改这一个方法，就能触发"是否有遗漏分支"的编译期问题 */
+    static void handle(DomainEvent e, long now) {
+        String desc = switch (e) {
+            case OrderCreated c -> "创建：" + c.orderId() + " 金额 " + c.amountCents();
+            case OrderPaid p -> "支付：" + p.orderId() + " 时间 " + p.paidAtMs();
+            case OrderCancelled x -> "取消：" + x.orderId() + " 原因 " + x.reason();
+        };
+        System.out.println("  [t=" + now + "] " + desc);
+    }
+
+    public static void main(String[] args) {
+        handle(new OrderCreated("9001", 6900), 0);
+        handle(new OrderPaid("9001", 1000), 1000);
+        handle(new OrderCancelled("9002", "用户申请"), 2000);
+        System.out.println("  新增事件类型 -> switch 处理处全部编译报错，改动面自动暴露");
+    }
+}
+```
+
+**课后练习**
+1. 把 49 章的订单领域事件改为 sealed + record 谱系，实现一个 switch 处理器，然后故意新增一个事件类型观察编译错误。
+2. 为 `sealed interface PaymentResult permits Success, Pending, Failed` 写三个子类型，分别给一个处理函数。
+3. 思考题：什么情况下**不该**用 sealed？从"插件化扩展"与"跨团队独立迭代"两个场景分析 non-sealed 的取舍。
+
+---
+
+### 57-04 模式匹配：instanceof 与 switch
+
+**知识点**
+- **`instanceof` 模式匹配**（Java 16 定稿）：`if (obj instanceof String s && s.length() > 3)`——**声明即赋值**，消除"判断+强转"两行变一行，且**作用域受流分析保护**（短路后 s 才可见）。替代 11 章 `instanceof` + 强转的样板。
+- **switch 模式匹配**（Java 21 定稿）：`case Integer i -> ...`、`case null -> ...`、`case String s when s.length() > 5 -> ...`（**when 守卫**）——支持**类型模式、null 处理、守卫条件**，配合 sealed 实现穷举。
+- **顺序与支配性**：模式 case 自上而下匹配，**编译器校验"不可达模式"**（子类型写在父类型之后报错）；**必须穷举**（sealed 时编译器可判定，非 sealed 需 `default`）。
+- **null 的显式处理**：传统 switch 遇 null 抛 NPE；**模式 switch 允许 `case null`**——"缺失值"不再靠 try-catch 兜底（44 章 null 安全的语言级支持）。
+- **与多态的关系**：如果行为可以放在子类里（虚方法分派），就不该用类型 switch——**类型判断是"外部行为无法绑定到类型"时的工具**（如跨模块处理第三方类型、事件分发、AST 遍历）。
+- **工程收益**：以 11 章的 `printInfo` 为例，sealed 事件 + 模式 switch 后，**新增一个事件类型会把所有未处理点编译错误暴露**——比"记得去改所有 if-else"可靠一个量级。
+- 易错点：用类型 switch 替代多态（可扩展性反而变差）；忘记 `case null`（运行期 NPE）；非 sealed 类型漏 default（编译错误但误以为是语法问题）；守卫条件用副作用（when 里改状态）。
+
+**示例代码**
+```java
+import java.util.List;
+
+public class PatternMatching {
+    sealed interface Payment permits CardPay, WalletPay, BankTransfer {
+    }
+
+    record CardPay(String cardNo, long cents) implements Payment {
+    }
+
+    record WalletPay(String walletId, long cents) implements Payment {
+    }
+
+    record BankTransfer(String bankCode, long cents) implements Payment {
+    }
+
+    /** 类型模式 + 守卫：小额卡支付走快速通道 */
+    static String route(Payment p) {
+        return switch (p) {
+            case CardPay c when c.cents() < 100_00 -> "快速通道（卡小额）:" + c.cardNo();
+            case CardPay c -> "标准通道（卡）:" + c.cardNo();
+            case WalletPay w -> "钱包通道:" + w.walletId();
+            case BankTransfer b -> "网银通道:" + b.bankCode();
+        };
+    }
+
+    /** instanceof 模式：作用域受流分析保护 */
+    static void describe(Object o) {
+        if (o instanceof String s && s.startsWith("ORD")) {
+            System.out.println("  订单号：" + s.toUpperCase());
+        } else if (o instanceof Number n) {
+            System.out.println("  数值：" + n.doubleValue());
+        } else {
+            System.out.println("  不支持的类型：" + (o == null ? "null" : o.getClass().getSimpleName()));
+        }
+    }
+
+    public static void main(String[] args) {
+        List<Payment> payments = List.of(
+                new CardPay("6222****1234", 5000),
+                new CardPay("6222****8888", 500_00),
+                new WalletPay("w-1001", 3000),
+                new BankTransfer("ICBC", 200_00));
+        for (Payment p : payments) {
+            System.out.println("  " + route(p));
+        }
+        describe("ord-9001");
+        describe(42);
+        describe(null);
+    }
+}
+```
+
+**课后练习**
+1. 用 sealed + 模式 switch 重写 11 章的 `instanceof` 分支逻辑，对比代码行数与"新增子类时的编译提示"。
+2. 实现 `sealed interface JsonValue permits JsonNull, JsonBool, JsonNum, JsonStr, JsonArr, JsonObj`，写 `toJsonString` 递归处理（练习 57-05 的嵌套解构前置）。
+3. 思考题：类型 switch 与多态分派的边界在哪里？举一个"用错方向"的代码并改成正确形态。
+
+---
+
+### 57-05 记录模式与嵌套解构
+
+**知识点**
+- **记录模式（Java 21 定稿）把"判断类型 + 取字段"合并为一次解构**：`case Point(int x, int y) -> ...`——**直接拿到组件值**，无需 `p.x()`。嵌套时层层展开：`case Line(Point(var x1, var y1), Point(var x2, var y2))`。
+- **解构的语义与限制**：记录模式按**组件声明顺序**匹配（位置模式），类型不匹配则不匹配；配合 sealed 可实现**结构化数据的穷举处理**（表达式树、AST、JSON、坐标几何）。
+- **与守卫组合**：`case Circle(Point(int x, int y), int r) when r > 10 -> ...`——**结构 + 条件**一次表达。
+- **典型应用：表达式求值器**——`sealed interface Expr permits Num, Add, Mul, Neg`，`eval` 用嵌套记录模式递归求值，代码量比 visitor 模式少一半且无遗漏风险（31 章 visitor 的现代替代）。
+- **适用边界**：记录模式适合"结构固定且封闭"的数据（sealed + record）；**开放结构（可能新增字段）不适合**——加字段会改所有解构点（编译器帮你发现，但改动面大）。
+- 易错点：组件顺序记错（按位置匹配，顺序错了类型对不上就 silently 不匹配）；与 var 混用时类型推断混乱（`Point(var x, var y)` 最清晰）；解构后忘记处理 null 组件。
+
+**示例代码**
+```java
+public class RecordPatternDemo {
+    sealed interface Expr permits Num, Add, Mul, Neg {
+    }
+
+    record Num(int value) implements Expr {
+    }
+
+    record Add(Expr left, Expr right) implements Expr {
+    }
+
+    record Mul(Expr left, Expr right) implements Expr {
+    }
+
+    record Neg(Expr inner) implements Expr {
+    }
+
+    /** 嵌套记录模式：一行解构出操作数与运算符 */
+    static int eval(Expr e) {
+        return switch (e) {
+            case Num(int v) -> v;
+            case Add(Expr l, Expr r) -> eval(l) + eval(r);
+            case Mul(Expr l, Expr r) -> eval(l) * eval(r);
+            case Neg(Expr inner) -> -eval(inner);
+        };
+    }
+
+    /** 结构 + 守卫：识别 "加法的右操作数为负数" 这种模式 */
+    static boolean hasNegativeAddend(Expr e) {
+        return switch (e) {
+            case Add(Expr l, Neg(Num(int v))) -> v > 0;
+            case Add(Expr l, Expr r) -> hasNegativeAddend(r);
+            default -> false;
+        };
+    }
+
+    public static void main(String[] args) {
+        Expr e = new Mul(new Add(new Num(2), new Num(3)), new Neg(new Num(4)));
+        System.out.println("  表达式求值：(2+3) * -(4) = " + eval(e));
+        System.out.println("  含负加数：" + hasNegativeAddend(new Add(new Num(1), new Neg(new Num(8)))));
+        System.out.println("  对比 visitor 模式：无需 4 个 visit 方法与接口改动");
+    }
+}
+```
+
+**课后练习**
+1. 实现完整表达式求值器（含 `Div` 与除零保护），用嵌套记录模式写出 `eval` 并覆盖 6 个测试表达式。
+2. 实现 `record Line(Point a, Point b)` 与 `record Point(int x, int y)`，用嵌套模式判断"两条线是否共端点"。
+3. 思考题：记录模式与 visitor 模式的取舍是什么？从"新增类型"与"新增操作"两个维度的改动成本对比分析。
+
+---
+
+### 57-06 文本块与字符串处理
+
+**知识点**
+- **文本块（Java 15 定稿）解决多行字符串的转义地狱**：`"""` 三引号包裹，**自动处理行首缩进**（按最左非空白行对齐）、**保留换行**、**无需 `\n` 拼接**——JSON/SQL/HTML/模板的书写体验质变。
+- **文本块的三个细节**：① 结束定界符位置决定缩进基准；② `\` 行尾表示"不换行"（拼接下一行）；③ `\s` 表示空格（防止编辑器去尾空格）。**`"""` 内的 `"` 无需转义**（除非连续三个）。
+- **字符串增强（Java 11~21）**：`isBlank/strip/repeat/lines`；**`formatted()`** 替代 `String.format`；**`stripIndent/translateEscapes`** 处理文本加工。
+- **文本块不是模板引擎**：它是"字面量"，值仍需拼接或 `formatted` 占位。**字符串模板（STR."..."）在 21 仍是预览**——生产用 `formatted` 或 `String.format`（40-03 Prompt 拼接的现代写法）。
+- **JSON 拼装的正确姿势**：**永远不要用字符串拼 JSON**（40-03/36-02 的注入教训）——文本块适合"静态模板 + 少量占位"，值要通过序列化器编码；**文本块里放 SQL 也一样，值用占位符**（21-01 参数绑定）。
+- 易错点：文本块缩进基准搞错（输出多出空格）；`"""` 里嵌入 `"""`（需转义或拆分）；把文本块当模板插值用（没有插值语义）；用文本块拼用户输入（注入）。
+
+**示例代码**
+```java
+public class TextBlockDemo {
+    /** 一段多行 JSON：值用占位符 + 序列化思想 */
+    static String orderJson(String orderId, long cents) {
+        String id = orderId.replace("\"", "\\\"");        // 值必须转义（真实项目用序列化器）
+        return """
+                {
+                  "orderId": "%s",
+                  "amountCents": %d,
+                  "currency": "CNY",
+                  "items": []
+                }""".formatted(id, cents);
+    }
+
+    /** SQL 模板：结构在文本块，值走占位符 */
+    static final String SQL_FIND =
+            """
+            SELECT o.id, o.amount, u.name
+              FROM orders o
+              JOIN users u ON u.id = o.user_id
+             WHERE o.tenant_id = ?
+               AND o.status = ?
+             ORDER BY o.created_at DESC
+             LIMIT ?""";
+
+    /** 文本块的行处理：lines / strip / isBlank */
+    static void inspect(String text) {
+        System.out.printf("  行数=%d 空行=%d 首行=[%s]%n",
+                text.lines().count(),
+                text.lines().filter(String::isBlank).count(),
+                text.lines().findFirst().orElse(""));
+    }
+
+    public static void main(String[] args) {
+        System.out.println(orderJson("9001", 6900));
+        System.out.println("  ---- SQL 模板 ----");
+        System.out.println(SQL_FIND);
+        System.out.println("  占位符数 = " + SQL_FIND.chars().filter(c -> c == '?').count());
+        inspect(orderJson("9002", 100));
+    }
+}
+```
+
+**课后练习**
+1. 用文本块重写项目里三段拼接的 SQL 与一段 JSON，统计可读性改善（行数与转义字符数）。
+2. 实现一个"文本块模板渲染器"：解析 `{name}` 占位符并替换，同时**对值做 JSON 转义**，验证注入字符被安全处理。
+3. 思考题：为什么"文本块 + 占位符"仍然不能替代参数化查询？从"结构安全"与"值编码"的分工分析。
+
+---
+
+### 57-07 var 与局部变量类型推断
+
+**知识点**
+- **var 是局部变量的类型推断**（Java 10）：`var list = new ArrayList<String>()`——**编译器按初始化表达式推断右侧具体类型**，不是 `Object`、不是动态类型。**只允许局部变量**（方法内、for、try-with-resources），成员变量/参数/返回值禁用。
+- **var 的正确用法**：① 右侧类型一目了然时（`var order = orderRepository.findById(id)`）；② 减少泛型噪音（`var map = new HashMap<String, List<Order>>()`）；③ 循环变量（`for (var entry : map.entrySet())`）。**读代码的人不需要跳转就能推断类型**时才用。
+- **不该用 var 的场景**：右侧是方法调用且返回类型不直观（`var result = service.process(...)` 读者不知是啥）、数值字面量（`var x = 0` 是 int，可能不是你想的 long）、需要显式宽类型（`List<String> l = new ArrayList<>()` 比 `var l = new ArrayList<String>()` 更灵活）。
+- **var 与匿名类/交叉类型的坑**：`var x = new Object() { void f() {} }` 推断为匿名类（可用 f）——**这是唯一能拿到匿名类方法的写法**，但也容易写出局部"黑魔法"。
+- **团队规范比技术细节重要**：常见约定是"变量名足够表达类型语义时用 var"（`var orders = ...` 可以，`var d = ...` 不行）——**写进团队规范与 code review 清单**。
+- 易错点：以为 var 影响性能（编译期完全静态）；在 lambdavs 里用 var 省略参数类型（需显式标注才能加注解）；用 var 掩盖了复杂返回类型（可读性下降）。
+
+**示例代码**
+```java
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+public class VarDemo {
+    record Order(String id, long cents) {
+    }
+
+    /** 推荐：右侧类型直观，var 消除泛型噪音 */
+    static Map<String, List<Order>> groupByUser(List<Order> orders) {
+        var result = new HashMap<String, List<Order>>();
+        for (var order : orders) {
+            result.computeIfAbsent(order.id().substring(0, 2), k -> new java.util.ArrayList<>())
+                    .add(order);
+        }
+        return result;
+    }
+
+    /** 不推荐：返回类型不直观，读者需要跳转 */
+    static Object risky() {
+        return "a string";
+    }
+
+    public static void main(String[] args) {
+        var orders = List.of(new Order("u1-9001", 6900), new Order("u2-9002", 3900),
+                new Order("u1-9003", 12900));
+        var grouped = groupByUser(orders);
+        for (var entry : grouped.entrySet()) {
+            System.out.printf("  %s -> %d 单%n", entry.getKey(), entry.getValue().size());
+        }
+
+        var suspicious = risky();            // 推断为 Object：看不出内容
+        System.out.println("  var 掩盖类型：" + suspicious.getClass().getSimpleName());
+
+        // 数值字面量的陷阱
+        var smallNumber = 0;                 // int，不是 long
+        long explicit = 0L;
+        System.out.printf("  int=%d long=%d 同一字面量不同声明%n", smallNumber, explicit);
+    }
+}
+```
+
+**课后练习**
+1. 审查项目里 10 处 `var` 用法，按"右侧是否直观"分类，把不合适的改回显式类型并记录理由。
+2. 写一段代码验证 var 在 for 循环、try-with-resources、匿名类三种场景下的推断结果（用 `getClass()` 输出）。
+3. 思考题：为什么 var 不能用于方法参数与返回值？从 API 契约（调用方必须知道类型）与源码可读性分析。
+
+---
+
+### 57-08 Sequenced Collections 与集合增强
+
+**知识点**
+- **Sequenced Collections（Java 21 定稿）补齐了"有序集合"的统一抽象**：`SequencedCollection`（addFirst/addLast、getFirst/getLast、reversed()）、`SequencedSet`（去重有序）、`SequencedMap`（putFirst/putLast、pollFirstEntry、reversed()）——**List/Deque/LinkedHashSet/LinkedHashMap 全部实现它**。
+- **解决的历史痛点**：取"第一个元素"过去要写 `list.get(0)` / `deque.peekFirst()` / `set.iterator().next()` 三套 API；**现在统一 `getFirst()`**（空集合抛 `NoSuchElementException`，语义明确）。
+- **`reversed()` 是视图不是拷贝**：`list.reversed()` 返回反向视图，改动会双向可见——**与 `Collections.reverse()`（原地修改）完全不同**，这是最大的误用点。
+- **集合工厂增强**：`List.of` / `Set.of` / `Map.of` 的不可变语义（16-02 已有）、`Stream.toList()`（不可变）、`List.copyOf`（防御性拷贝）——**现代 Java 的默认选择是不可变集合**，可变集合需要显式 `new ArrayList<>()`。
+- **与 15 章的关系**：15 章讲集合选型（List/Set/Map 语义）；本章讲"顺序视图"的统一 APIs——**老代码里那些 `get(0)`、`iterator().next()` 可以统一替换**。
+- 易错点：`reversed()` 当拷贝用（改视图影响原集合）；空集合 `getFirst()` 抛异常未处理；`List.of` 里放 null（直接 NPE）；`Stream.toList()` 返回不可变却尝试 add。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+
+public class SequencedDemo {
+    public static void main(String[] args) {
+        System.out.println("【统一的首尾访问】");
+        var list = new ArrayList<>(List.of("A", "B", "C"));
+        var deque = new java.util.ArrayDeque<>(List.of("X", "Y", "Z"));
+        var linkedSet = new LinkedHashSet<>(List.of(1, 2, 3));
+        System.out.printf("  List     first=%s last=%s%n", list.getFirst(), list.getLast());
+        System.out.printf("  Deque    first=%s last=%s%n", deque.getFirst(), deque.getLast());
+        System.out.printf("  Set      first=%d last=%d%n", linkedSet.getFirst(), linkedSet.getLast());
+
+        System.out.println("【reversed 是视图，不是拷贝】");
+        var view = list.reversed();
+        System.out.println("  视图：" + view);
+        view.add("D");                       // 通过视图加在"最前"
+        System.out.println("  原列表：" + list + "（视图修改双向可见）");
+        view.removeLast();                   // 撤销，恢复原状
+
+        System.out.println("【SequencedMap】");
+        var map = new LinkedHashMap<String, Integer>();
+        map.putFirst("last-added-first", 1);
+        map.putLast("appended", 2);
+        map.put("middle", 3);
+        System.out.println("  顺序：" + map.keySet());
+        System.out.println("  首个 entry：" + map.firstEntry());
+        System.out.println("  反转视图：" + map.reversed().keySet());
+
+        System.out.println("【不可变集合的现代默认】");
+        var immutable = List.of("a", "b");
+        try {
+            immutable.add("c");
+        } catch (UnsupportedOperationException e) {
+            System.out.println("  List.of 不可变：add 抛 UnsupportedOperationException");
+        }
+    }
+}
+```
+
+**课后练习**
+1. 把项目里所有 `get(0)` / `iterator().next()` / `peekFirst()` 统一替换为 `getFirst()`，记录替换数量与可读性收益。
+2. 实现一个"最近访问列表"（LRU 思想）：用 `LinkedHashSet` + `getFirst/removeLast` 实现，验证容量上限淘汰。
+3. 思考题：为什么 `reversed()` 设计成视图而不是拷贝？从内存成本与"双向一致性"的取舍分析，并说明何时必须显式拷贝。
+
+---
+
+### 57-09 Stream 与 Optional 的现代用法
+
+**知识点**
+- **`Stream.toList()`（Java 16）**：替代 `collect(Collectors.toList())`，**返回不可变列表**——这是与老写法的关键差异（想可变要 `new ArrayList<>(stream.toList())`）。
+- **`mapMulti`（Java 16）**：一对多展开（`flatMap` 的替代），**不产生中间流**，性能更好且支持条件展开；`Stream.ofNullable` 处理可空元素。
+- **Optional 的现代 API**：`orElseThrow()`（无参版本，空则抛 NoSuchElementException）、`ifPresentOrElse(consumer, runnable)`、`or(Supplier<Optional>)`、`stream()`（0/1 元素的流，**消除 `if (opt.isPresent())` 分支**）。
+- **Optional 的使用纪律**（15 章的老话题，现代写法强化）：**只用于返回值**，不用于字段/参数/集合元素（`List<Optional<T>>` 是反模式）；不要 `opt.get()`（用 orElse/ifPresent/orElseThrow）；**Optional 链式优于嵌套 if**。
+- **Stream 的工程纪律**：保持"声明式管道"短而清晰（超过 5 个操作符考虑拆方法）、副作用收在终端操作（`peek` 只用于调试）、并行流只在"大数据量 + 无共享状态 + 纯计算"时用（50-09 已验）。
+- 易错点：`toList()` 后尝试修改（不可变）；`Optional.get()` 滥用（空值 NPE）；`mapMulti` 与 `flatMap` 混用选错（有 IO 副作用时反而要 flatMap）；并行流里写共享集合（线程安全问题）。
+
+**示例代码**
+```java
+import java.util.List;
+import java.util.Optional;
+import java.util.stream.Stream;
+
+public class StreamModern {
+    record User(String name, String email) {
+    }
+
+    /** Optional.stream：把"可能没有"自然融入流管道 */
+    static List<String> emailsOf(List<User> users, String domain) {
+        return users.stream()
+                .map(u -> Optional.ofNullable(u.email()))
+                .flatMap(Optional::stream)                 // 空的自动消失
+                .filter(e -> e.endsWith(domain))
+                .map(String::toLowerCase)
+                .toList();
+    }
+
+    /** mapMulti：条件展开，无中间集合 */
+    static List<String> splitTags(String csvTags) {
+        return Stream.of(csvTags.split(";"))
+                .<String>mapMulti((token, downstream) -> {
+                    String trimmed = token.strip();
+                    if (!trimmed.isEmpty()) {
+                        downstream.accept(trimmed);
+                    }
+                })
+                .toList();
+    }
+
+    /** ifPresentOrElse：无 if/else 的"有则处理，无则兜底" */
+    static String display(Optional<User> user) {
+        StringBuilder sb = new StringBuilder();
+        user.ifPresentOrElse(
+                u -> sb.append("用户：").append(u.name()),
+                () -> sb.append("匿名用户"));
+        return sb.toString();
+    }
+
+    public static void main(String[] args) {
+        List<User> users = List.of(
+                new User("alice", "Alice@Ex.COM"),
+                new User("bob", null),
+                new User("carol", "carol@other.cn"));
+        System.out.println("  @ex.com 邮箱：" + emailsOf(users, "@ex.com"));
+        System.out.println("  标签解析：" + splitTags(" java ;; spring ;jvm "));
+        System.out.println("  " + display(Optional.of(users.get(0))));
+        System.out.println("  " + display(Optional.empty()));
+        System.out.println("  toList 不可变：" + tryAdd(emailsOf(users, "@ex.com")));
+    }
+
+    static String tryAdd(List<String> list) {
+        try {
+            list.add("x");
+            return "意外成功";
+        } catch (UnsupportedOperationException e) {
+            return "不可变（预期）";
+        }
+    }
+}
+```
+
+**课后练习**
+1. 把项目里 5 处 `isPresent()` + `get()` 的写法改为 `ifPresentOrElse` / `orElseThrow` / `Optional.stream`，各写单测保证行为等价。
+2. 用 `mapMulti` 实现"把每行文本按逗号拆分并过滤空项"，对比 `flatMap` 版本的内存分配（记录代码长度与可读性）。
+3. 思考题：为什么 `List<Optional<T>>` 是反模式？从"空值语义"与"集合已能表达 0~N 元素"的重叠分析。
+
+---
+
+### 57-10 现代 Java 的迁移策略与兼容性
+
+**知识点**
+- **迁移是工程不是语法**：目标版本确定（57-01 LTS 路线）-> 依赖扫描（`mvn dependency:tree` + `jdeprscan`）-> 编译目标调整（`maven.compiler.release`）-> 废弃 API 修复 -> 运行时参数核对（GC/容器感知）-> 灰度验证（41-07）。
+- **`--release` 比 `-source/-target` 更安全**：`--release 21` 同时约束语法与**API 可见性**（防止误用高版本才有的 API 却声称兼容低版本）——**构建配置必须写 release**。
+- **三条渐进路线**：① **先升级 JDK 不动代码**（最低风险，验证运行时兼容）；② **再启用新特性**（record/sealed 只在新增代码用，老代码不动）；③ **最后回头重构**（49-10 演进纪律，按痛点而非按版本）。**反模式：一次升级+全量重构**。
+- **字节码增强类库是最敏感的依赖**：Lombok、Mockito、AspectJ、CGLIB 都依赖内部 API——**升级前先确认其支持目标 JDK**（53-08 SkyWalking Agent 的同款问题）；Spring Boot 3.x 要求 JDK 17+ 也是这个原因。
+- **废弃与移除的清单**：`SecurityManager`（21 永久禁用）、`finalize`（标记废弃）、`Thread.stop/suspend`（早已废弃）、若干 `sun.misc`——**升级时先跑 `jdeprscan` 拿到全量清单**，逐条决定"替换/屏蔽/接受"。
+- 易错点：只改 pom 的 java.version 不查运行时（升级后依赖崩）；直接用预览特性（下次升级即失败）；一步到位重构（回滚困难）；不评估字节码库（Lombok 版本旧导致编译失败）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class MigrationPlan {
+    record Step(int order, String action, String risk, String rollback) {
+    }
+
+    static void roadmap() {
+        System.out.println("【四步迁移路线（每步可独立回退）】");
+        List<Step> steps = List.of(
+                new Step(1, "升级 JDK 运行时，代码零改动", "低：运行时差异", "回退 JDK 版本"),
+                new Step(2, "编译目标改 --release 21，修废弃 API", "中：编译错误集中暴露", "逐个提交回退"),
+                new Step(3, "新代码启用 record/sealed/模式匹配", "低：增量引入", "新代码可单独回退"),
+                new Step(4, "按痛点重构老代码（49-10）", "中：行为变更风险", "保留黄金样本回归"));
+        for (Step s : steps) {
+            System.out.printf("  第%d步 %-34s 风险=%-16s 回退=%s%n",
+                    s.order(), s.action(), s.risk(), s.rollback());
+        }
+        System.out.println();
+    }
+
+    static void dependencyCheck() {
+        System.out.println("【升级前依赖扫描清单】");
+        Map<String, String> checks = new LinkedHashMap<>();
+        checks.put("字节码增强库", "Lombok/Mockito/AspectJ/CGLIB：确认支持目标 JDK");
+        checks.put("框架版本", "Spring Boot 3.x 要求 JDK 17+，3.2+ 支持 21");
+        checks.put("废弃 API", "jdeprscan --release 21 全量清单");
+        checks.put("GC/容器参数", "G1 默认化；容器内存感知已内置（37-08）");
+        checks.put("预览特性", "生产代码禁用（--enable-preview 不承诺）");
+        checks.forEach((k, v) -> System.out.printf("  %-10s %s%n", k, v));
+        System.out.println();
+    }
+
+    public static void main(String[] args) {
+        roadmap();
+        dependencyCheck();
+        System.out.println("  验证标准：四步全部走完后，回归测试通过 + 压测指标不劣化（41 章门禁）");
+    }
+}
+```
+
+**课后练习**
+1. 为一个真实项目制定四步迁移计划（含依赖扫描结果、每步验证标准与回退方式），输出可评审文档。
+2. 用 `jdeprscan`（或等价工具）扫描你的依赖，列出废弃 API 清单并分类（替换/接受/屏蔽）。
+3. 思考题：为什么"先升级运行时再重构代码"比"一次做完"更安全？从故障归因（两件事混在一起）与回滚粒度分析。
+
+---
+
+### 57-11 综合案例：用 Java 21 重构订单模块
+
+**知识点**
+- **把本章收口成一次真实重构**：老订单模块（可变实体 + if-else 状态处理 + 三套集合 API + 拼接 JSON）-> 现代形态（record 值对象 + sealed 状态事件 + 模式匹配分发 + Sequenced Collections 取最近记录 + 文本块 SQL）。
+- **重构的安全网**：先写"黄金样本"（20 组输入输出快照 49-10）-> 逐块替换（每块一个提交）-> 每步跑回归 -> 全部等价才算完成——**重构不是重写**。
+- **重构顺序（按收益/风险比）**：① 值对象改 record（无行为变更，收益最大）；② JSON 拼接改文本块模板（可读性）；③ 集合 API 统一（`getFirst`）；④ 状态处理改 sealed + switch（编译器保证穷举）；⑤ 最后才动业务逻辑。
+- **收益量化范本**：样板代码 -60%（record 替代 getter/equals）、状态遗漏风险归零（sealed 穷举）、注入风险下降（占位符/序列化）、可读性提升（文本块）。
+- **重构产出的文档**：变更清单（每项对应哪条语言特性）、行为等价证据（黄金样本 diff）、回退方案——**41 章发布纪律的代码重构版**。
+- 易错点：重构同时改业务逻辑（回归失败时无法归因）；一次性替换所有 getter（review 困难）；record 化时漏掉可变性（原实体会被外部改字段）。
+
+**示例代码**
+```java
+import java.util.ArrayList;
+import java.util.List;
+
+public class ModernRefactorCase {
+    /** 重构后：值对象 record + 状态 sealed + 模式匹配分发 */
+    record Item(String sku, long unitCents, int qty) {
+        long subtotal() {
+            return unitCents * qty;
+        }
+    }
+
+    sealed interface OrderState permits Placed, Paid, Closed {
+    }
+
+    record Placed(long placedAt) implements OrderState {
+    }
+
+    record Paid(long paidAt, String channel) implements OrderState {
+    }
+
+    record Closed(String reason) implements OrderState {
+    }
+
+    record Order(String id, List<Item> items, OrderState state) {
+        Order {
+            items = List.copyOf(items);
+        }
+
+        long totalCents() {
+            return items.stream().mapToLong(Item::subtotal).sum();
+        }
+
+        /** 状态说明：新增状态 -> 此 switch 编译报错（穷举保障） */
+        String describe() {
+            return switch (state) {
+                case Placed p -> "待支付（下单于 " + p.placedAt() + "）";
+                case Paid pa -> "已支付（" + pa.channel() + "，金额 " + totalCents() + " 分）";
+                case Closed c -> "已关闭（" + c.reason() + "）";
+            };
+        }
+    }
+
+    /** 最近的 N 条商品（Sequenced Collections 取尾部） */
+    static List<Item> latest(List<Item> items, int n) {
+        var copy = new ArrayList<>(items);
+        var out = new ArrayList<Item>();
+        for (int i = 0; i < n && !copy.isEmpty(); i++) {
+            out.add(copy.removeLast());
+        }
+        return out;
+    }
+
+    public static void main(String[] args) {
+        var items = List.of(new Item("SKU-A", 6900, 1), new Item("SKU-B", 3900, 2),
+                new Item("SKU-C", 12900, 1));
+        var orders = List.of(
+                new Order("9001", items, new Placed(1000)),
+                new Order("9002", items, new Paid(2000, "wechat")),
+                new Order("9003", items, new Closed("用户取消")));
+        orders.forEach(o -> System.out.printf("  %s：%s，总额 %d 分%n",
+                o.id(), o.describe(), o.totalCents()));
+        System.out.println("  最近 2 条商品：" + latest(items, 2));
+        System.out.println();
+        System.out.println("  重构收益：record 消除样板 / sealed 穷举保障 / 文本块 SQL（57-06）/ 集合 API 统一");
+    }
+}
+```
+
+**课后练习**
+1. 选一个真实的"贫血实体 + if-else 状态处理"模块，按本章顺序完成五步重构，每步产出回归证据。
+2. 为本案例补充"退款"状态（`Refunded`），观察编译器指出的所有待改点并逐一处理。
+3. 思考题：为什么重构要"先写黄金样本"？从"行为等价的客观证据"与"重构与改需求混淆"两个角度分析。
