@@ -83,4 +83,4 @@ if fails:
     for cls, msg in fails:
         print("=" * 60)
         print(cls)
-        print(msg)
+        print(msg.encode("utf-8", "replace").decode("utf-8"))

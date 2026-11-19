@@ -1,0 +1,50 @@
+# ============================================================
+# 黑马 2026 版 AI+Java 课程配套工程 —— 版本控制忽略规则
+# 原则：只跟踪"源"（.java / .md / 生成脚本 / 编译报告），
+#       不跟踪"产物"（.class、运行期 demo 文件、临时日志）。
+# ============================================================
+
+# ---------- Java 编译产物 ----------
+*.class
+*.jar
+*.war
+
+# 两个编译脚本的输出目录（compile_pkg.py -> out_pkg，compile_all.py -> out）
+_build/out/
+_build/out_pkg/
+
+# Maven / IDE 编译输出
+target/
+JavaProject/target/
+
+# ---------- 示例程序运行时生成的文件 ----------
+# 第16/18章 IO 示例以相对工作目录的 demo/ 读写文件，内容全部由示例代码自己创建。
+# 但这些示例要求 demo/ 目录本身已存在（如 FileOutputStream 不会自动建目录），
+# 所以保留一个 .gitkeep 占位，其余产物一律忽略。
+demo/*
+!demo/.gitkeep
+_build/demo/*
+!_build/demo/.gitkeep
+
+# ---------- 构建与冒烟脚本的临时输出 ----------
+# 注意：_build/compile_report.txt 是人工整理的编译报告，需要保留，不在此列。
+_build/compile_out.txt
+_build/compile_final.txt
+_build/sources.txt
+_build/run_all_part*.txt
+
+# ---------- 编辑器 / 操作系统 ----------
+# 保留 .idea 下的共享配置（compiler.xml、encodings.xml、misc.xml 等），
+# 只忽略各人本地状态文件。
+**/.idea/workspace.xml
+**/.idea/shelf/
+**/.idea/usage.statistics.xml
+**/.idea/tasks.xml
+**/.idea/httpRequests/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ---------- 日志 ----------
+*.log

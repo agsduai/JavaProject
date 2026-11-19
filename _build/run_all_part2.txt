@@ -1,8 +1,0 @@
-classes to run: 236 (prefixes=['com/heima/ch22', 'com/heima/ch23', 'com/heima/ch24', 'com/heima/ch25', 'com/heima/ch26', 'com/heima/ch27', 'com/heima/ch28', 'com/heima/ch29', 'com/heima/ch30', 'com/heima/ch31', 'com/heima/ch32', 'com/heima/ch33', 'com/heima/ch34', 'com/heima/ch35', 'com/heima/ch36', 'com/heima/ch37', 'com/heima/ch38', 'com/heima/ch39', 'com/heima/ch40', 'com/heima/ch41', 'com/heima/ch42', 'com/heima/ch43'])
-... progress 1/236 (ok=1)
-... progress 51/236 (ok=51)
-... progress 101/236 (ok=101)
-... progress 151/236 (ok=151)
-... progress 201/236 (ok=201)
-
-RUN_ALL pass=236 fail=0 timeout=0 total=236

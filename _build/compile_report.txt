@@ -1,7 +1,19 @@
-total=695 pass=695 fail=0
-errors=0 warnings=6(pre-existing)
-full_smoke=695/695 (ch02-21:200, ch22-43:236, ch44-56+practice:259)
-interactive_reverify=18/18 (针对性输入)
-structure_audit=0 defects (33 format-variance notes: ch08-13 multi-block, generator-supported)
-output_pollution=1 found+fixed (ch42 SloGoldenSignals %)
-name_mapping=complete (no NO NAME/SKIP)
+total=959 exit=0
+errors=0 warnings=11(pre-existing)
+smoke_ch77_80=44/44
+total=915 exit=0
+errors=0 warnings=11(pre-existing)
+smoke_ch73_76=44/44
+total=871 pass=871 fail=0
+errors=0 warnings=11(pre-existing)
+smoke_ch69_72=44/44
+smoke_ch65_68=44/44
+smoke_ch61_64=44/44
+smoke_ch57_60=44/44
+smoke_ch53_56=44/44
+smoke_ch49_52=44/44
+smoke_ch45_48=44/44
+smoke_ch41_44=44/44
+smoke_ch37_40=44/44
+smoke_practice=84/84
+full_smoke_20261118=695/695 (ch02-56)
