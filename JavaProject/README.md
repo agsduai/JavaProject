@@ -1,8 +1,8 @@
 # JavaProject（黑马 2026 版 AI+Java 课程配套工程）
 
 > 课程来源：B站 BV1TJxCzSEEZ《黑马程序员2026版AI+Java零基础全套视频课程》
-> 共 865 课（一课一个 `.java`），另含 116 个实操题文件。
-> 官方视频到第 14 章结束，`ch15`~`ch82` 为按同一格式补充的扩展章节。
+> 共 876 课（一课一个 `.java`），另含 116 个实操题文件。
+> 官方视频到第 14 章结束，`ch15`~`ch83` 为按同一格式补充的扩展章节。
 > 全部遵循 Java 命名规范：包名全小写点分隔，类名大驼峰。
 
 ## 每章的练习在哪
@@ -96,6 +96,7 @@ src/main/java/com/heima/
 ├── ch80/  (11 课)
 ├── ch81/  (11 课)
 ├── ch82/  (11 课)
+├── ch83/  (11 课)
 └── practice/
     ├── basic/  (11 题)  ← 基础篇_第02-05章
     ├── advanced/  (10 题)  ← 进阶篇_第06-10章
@@ -115,7 +116,7 @@ src/main/java/com/heima/
 
 ## 命名规范
 
-- 包名：`com.heima.ch02` … `com.heima.ch82`，实操题 `com.heima.practice.basic` 等，全小写、点分隔；
+- 包名：`com.heima.ch02` … `com.heima.ch83`，实操题 `com.heima.practice.basic` 等，全小写、点分隔；
 - 类名：英文大驼峰，如 `Literal`、`BmiCalculator`、`LibraryManagementSystem`；
 - 辅助类：`入口类名 + 原类名`，如 `InheritanceIntroAnimal`，保证同包内不重名；
 - 方法/变量：小驼峰，如 `main`、`studentScore`；常量：全大写下划线。

@@ -5,7 +5,7 @@
 ## 目录
 
 - [JavaProject](JavaProject/README.md) —— **可运行 Java 工程**（遵循 Java 命名规范）
-  - 第 2~82 章共 865 课，一课一个 `.java` 文件，放在 `com.heima.ch02` ~ `com.heima.ch82` 包下；
+  - 第 2~83 章共 876 课，一课一个 `.java` 文件，放在 `com.heima.ch02` ~ `com.heima.ch83` 包下；
   - 每课文件头：课程来源、课号、课名、知识点注释；
   - 正文：完整示例代码；
   - 文件末尾：课后练习题注释块（无参考答案）；
@@ -48,7 +48,7 @@ javac -encoding UTF-8 -d out $(find src/main/java -name '*.java')
 java -cp out com.heima.ch02.Literal
 ```
 
-本工程使用 JDK 21，981 个文件全部编译校验通过（`javac --release 21 -Xlint:all`，0 error），其中 865 课 + 116 个实操题；第 77~82 章 66 课冒烟 66/66 通过，此前各批次课程与实操冒烟亦全部通过。
+本工程使用 JDK 21，992 个文件全部编译校验通过（`javac --release 21 -Xlint:all`，0 error），其中 876 课 + 116 个实操题；第 78~83 章 66 课冒烟 66/66 通过，此前各批次课程与实操冒烟亦全部通过。
 
 ## 目录与版本控制约定
 
