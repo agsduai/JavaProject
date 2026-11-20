@@ -1,0 +1,160 @@
+/**
+ * ============================================================
+ * 课程来源：黑马程序员《2026版 AI+Java 零基础全套视频课程》
+ *            B站 BV1TJxCzSEEZ（阿玮老师）
+ * 说明：官方课程视频到第 14 章结束，本章为按同一格式补充的扩展内容
+ * 课号：81-07
+ * 课名：热点 key 与本地缓存
+ * ------------------------------------------------------------
+ * 知识点：
+ *   - **热点 key**：**单个 key 的 QPS 占全站很大比例**（如秒杀商品、热搜）——**单分片扛不住**，**Redis 集群再大也只落在一个节点上**。
+ *   - **热点探测**：**滑动窗口统计 key 访问次数**，**超过阈值（如 1 万/秒）判定为热点**，然后**推送本地缓存 / 拆分 key / 限流**。
+ *   - **本地缓存（进程内）**：**命中不走网络（纳秒级）**，**容量小、各节点独立、更新要广播**——**适合「极热 + 变化不频繁」的数据**（81-09 讲多级）。
+ *   - **本地缓存的一致性问题**：**N 个节点 N 份副本**，**更新要发广播（MQ/配置中心）**，**广播丢失就有节点长期旧**——**所以本地缓存 TTL 要短（秒级）**。
+ *   - **热点 key 的三板斧**：**本地缓存挡在前面**、**key 拆分（hot:1:0~9 分散到多个节点）**、**读写分离 + 限流（保护后端）**。
+ *   - 易错点：本地缓存设 1 小时 TTL（更新要等一小时）；用 HashMap 当本地缓存（无上限、无淘汰、会 OOM）；热点 key 拆分后聚合结果算错。
+ * ============================================================
+ */
+
+package com.heima.ch81;
+
+// ==================== 示例代码 ====================
+
+
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+public class HotKeyLocalCache {
+    // ---------- 极简 LRU 本地缓存 ----------
+    static class LocalCache<K, V> extends LinkedHashMap<K, V> {
+        final int capacity;
+        long hits;
+        long misses;
+
+        LocalCache(int capacity) {
+            super(16, 0.75f, true);       // accessOrder=true -> LRU
+            this.capacity = capacity;
+        }
+
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+            return size() > capacity;
+        }
+
+        V getOrLoad(K k, java.util.function.Function<K, V> loader) {
+            V v = get(k);
+            if (v != null) {
+                hits++;
+                return v;
+            }
+            misses++;
+            v = loader.apply(k);
+            if (v != null) {
+                put(k, v);
+            }
+            return v;
+        }
+    }
+
+    // ---------- 滑动窗口热点探测 ----------
+    static class HotKeyDetector {
+        final Map<String, int[]> windows = new HashMap<>();
+        final int buckets;
+        final int threshold;
+
+        HotKeyDetector(int buckets, int threshold) {
+            this.buckets = buckets;
+            this.threshold = threshold;
+        }
+
+        void record(String key, long nowSec) {
+            int[] w = windows.computeIfAbsent(key, k -> new int[buckets]);
+            w[(int) (nowSec % buckets)]++;
+        }
+
+        int count(String key) {
+            int[] w = windows.get(key);
+            if (w == null) {
+                return 0;
+            }
+            int sum = 0;
+            for (int v : w) {
+                sum += v;
+            }
+            return sum;
+        }
+
+        boolean isHot(String key) {
+            return count(key) >= threshold;
+        }
+    }
+
+    public static void main(String[] args) {
+        Map<String, String> redis = new HashMap<>();
+        for (int i = 1; i <= 100; i++) {
+            redis.put("sku:" + i, "商品" + i);
+        }
+        LocalCache<String, String> local = new LocalCache<>(16);
+        HotKeyDetector detector = new HotKeyDetector(10, 50);
+
+        // 模拟：sku:7 是热点（占 60% 流量），其余长尾
+        int tailRedis = 0;                 // 长尾：直接走 Redis
+        int hotRedis = 0;                  // 热点：本地未命中才走 Redis
+        int hotLocal = 0;                  // 热点：本地命中
+        long now = 1000;
+        for (int i = 0; i < 1000; i++) {
+            String key = (i % 10 < 6) ? "sku:7" : "sku:" + (1 + (i * 37) % 100);
+            detector.record(key, now);
+            if (detector.isHot(key)) {
+                long missBefore = local.misses;
+                String v = local.getOrLoad(key, redis::get);
+                if (local.misses > missBefore) {
+                    hotRedis++;
+                } else {
+                    hotLocal++;
+                }
+                if (v == null) {
+                    throw new IllegalStateException("热点 key 不存在：" + key);
+                }
+            } else {
+                redis.get(key);            // 还没被判为热点，走 Redis
+                tailRedis++;
+            }
+            if (i % 100 == 99) {
+                now++;                     // 每 100 次请求推进 1 秒（滑动窗口按秒记）
+            }
+        }
+
+        int redisCalls = tailRedis + hotRedis;
+        System.out.printf("热点探测：sku:7 窗口内计数=%d，阈值=50，判定=%s%n",
+                detector.count("sku:7"), detector.isHot("sku:7"));
+        System.out.printf("本地缓存：容量=%d 条，命中 %d 次，未命中 %d 次%n",
+                local.capacity, local.hits, local.misses);
+        System.out.printf("Redis 调用：%d 次 / 总请求 1000 次（%.1f%%）%n",
+                redisCalls, redisCalls / 10.0);
+        System.out.printf("  其中 长尾直连 %d 次 + 热点判热前/首次回源 %d 次%n", tailRedis, hotRedis);
+        System.out.printf("  热点命中本地缓存 %d 次，这 %d 次完全没走网络%n", hotLocal, hotLocal);
+
+        System.out.println();
+        System.out.println("【热点三板斧】");
+        System.out.println("  1. 本地缓存：热点 key 落在每个进程内，不打 Redis（纳秒级）");
+        System.out.println("  2. key 拆分：hot:1 拆成 hot:1:0 ~ hot:1:9，分散到 10 个分片");
+        System.out.println("  3. 限流兜底：热点超出后端能力时，宁可拒绝也不把 DB 打挂");
+        System.out.println();
+        System.out.println("【本地缓存注意】TTL 必须短（1~5 秒），更新靠广播；否则多节点数据长期不一致");
+        System.out.println("【探测注意】判热需要一点时间（本示例前 50 次仍走 Redis），"
+                + "所以大促热点要靠「预热 + 人工白名单」补上这段窗口");
+    }
+}
+
+/*
+ * ============================================================
+ * 课后练习题（无参考答案）
+ * ------------------------------------------------------------
+ * 1. 修正上面的 redisCalls 统计（只统计真正走 Redis 的次数），算出本地缓存把 Redis 调用降低了多少。
+ * 2. 把热点阈值从 50 改成 200，观察长尾 key 被误判为热点的数量变化。
+ * 3. 思考题：为什么热点 key 拆分后，读取时要做「聚合」？聚合会带来什么新问题？
+ * ============================================================
+ */
+
